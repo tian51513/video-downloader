@@ -35,6 +35,16 @@ export async function getVideos(pageUrl: string): Promise<any[]> {
   return all[pageUrl] || []
 }
 
+export async function getAllVideos(): Promise<any[]> {
+  const result = await chrome.storage.local.get(VIDEOS_KEY)
+  const all: Record<string, any[]> = result[VIDEOS_KEY] || {}
+  return Object.values(all).flat()
+}
+
+export async function clearAllVideos(): Promise<void> {
+  await chrome.storage.local.remove(VIDEOS_KEY)
+}
+
 export async function clearVideos(pageUrl: string): Promise<void> {
   const result = await chrome.storage.local.get(VIDEOS_KEY)
   const all: Record<string, any[]> = result[VIDEOS_KEY] || {}

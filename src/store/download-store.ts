@@ -5,10 +5,16 @@ interface DownloadState {
   tasks: DownloadTask[]
   addTask: (task: DownloadTask) => void
   updateTask: (id: string, update: Partial<DownloadTask>) => void
-  updateProgress: (id: string, progress: number, speed: number, downloadedBytes: number) => void
+  updateProgress: (id: string, progress: number, speed: number, downloadedBytes: number, totalBytes?: number) => void
   updateStatus: (id: string, status: DownloadStatus, error?: string) => void
+  updateTaskChromeDownloadId: (id: string, chromeDownloadId: number) => void
   removeTask: (id: string) => void
   clearCompleted: () => void
+  clearFailed: () => void
+  clearByStatus: (status: DownloadStatus) => void
+  clearOrphanedTasks: (openPageUrls: string[]) => void
+  clearPageTasks: (pageUrl: string) => void
+  getTask: (id: string) => DownloadTask | undefined
   getTasksByStatus: (status: DownloadStatus) => DownloadTask[]
 }
 
@@ -16,7 +22,15 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
   tasks: [],
 
   addTask: (task) => {
-    set((state) => ({ tasks: [...state.tasks, task] }))
+    set((state) => {
+      const idx = state.tasks.findIndex((t) => t.id === task.id)
+      if (idx >= 0) {
+        const next = [...state.tasks]
+        next[idx] = task
+        return { tasks: next }
+      }
+      return { tasks: [...state.tasks, task] }
+    })
   },
 
   updateTask: (id, update) => {
@@ -25,10 +39,10 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
     }))
   },
 
-  updateProgress: (id, progress, speed, downloadedBytes) => {
+  updateProgress: (id, progress, speed, downloadedBytes, totalBytes) => {
     set((state) => ({
       tasks: state.tasks.map((t) =>
-        t.id === id ? { ...t, progress, speed, downloadedBytes } : t
+        t.id === id ? { ...t, progress, speed, downloadedBytes, ...(totalBytes !== undefined ? { totalBytes } : {}) } : t
       ),
     }))
   },
@@ -47,6 +61,12 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
     }))
   },
 
+  updateTaskChromeDownloadId: (id, chromeDownloadId) => {
+    set((state) => ({
+      tasks: state.tasks.map((t) => t.id === id ? { ...t, chromeDownloadId } : t),
+    }))
+  },
+
   removeTask: (id) => {
     set((state) => ({ tasks: state.tasks.filter((t) => t.id !== id) }))
   },
@@ -57,6 +77,39 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
         (t) => t.status !== 'completed' && t.status !== 'failed'
       ),
     }))
+  },
+
+  clearFailed: () => {
+    set((state) => ({
+      tasks: state.tasks.filter((t) => t.status !== 'failed'),
+    }))
+  },
+
+  clearByStatus: (status) => {
+    set((state) => ({
+      tasks: state.tasks.filter((t) => t.status !== status),
+    }))
+  },
+
+  clearOrphanedTasks: (openPageUrls) => {
+    const urlSet = new Set(openPageUrls)
+    set((state) => ({
+      tasks: state.tasks.filter((t) => {
+        const pageUrl = t.video.pageUrl
+        if (!pageUrl) return true // 保留无页面信息的任务
+        return urlSet.has(pageUrl)
+      }),
+    }))
+  },
+
+  clearPageTasks: (pageUrl) => {
+    set((state) => ({
+      tasks: state.tasks.filter((t) => t.video.pageUrl !== pageUrl),
+    }))
+  },
+
+  getTask: (id) => {
+    return get().tasks.find((t) => t.id === id)
   },
 
   getTasksByStatus: (status) => {

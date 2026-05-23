@@ -12,7 +12,7 @@ interface FilterPanelProps {
   onReset: () => void
 }
 
-const ALL_FORMATS: VideoFormat[] = ['mp4', 'mkv', 'webm', 'flv', 'avi', 'hls', 'dash', 'blob']
+const ALL_FORMATS: VideoFormat[] = ['mp4', 'mkv', 'webm', 'flv', 'avi', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav']
 
 export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSources, onFilterChange, onReset }) => {
   const [collapsed, setCollapsed] = useState(true)

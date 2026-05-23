@@ -7,6 +7,7 @@ import { BlacklistManager } from './components/BlacklistManager'
 import { NamingSettings } from './components/NamingSettings'
 import { AppearanceSettings } from './components/AppearanceSettings'
 import { ExternalDownloaderSettings } from './components/ExternalDownloaderSettings'
+import { DownloadHistory } from './components/DownloadHistory'
 
 const { Title } = Typography
 
@@ -17,6 +18,7 @@ function IndexOptions() {
   const isDark = settings.themeMode === 'dark' || (settings.themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
   const tabItems = [
+    { key: 'history', label: '下载历史', children: <DownloadHistory /> },
     { key: 'download', label: '下载设置', children: <DownloadSettingsPanel /> },
     { key: 'naming', label: '命名规则', children: <NamingSettings /> },
     { key: 'blacklist', label: '黑名单管理', children: <BlacklistManager /> },

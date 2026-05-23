@@ -3,6 +3,8 @@ import { ConfigProvider, theme, Spin } from 'antd'
 import { FullPlayer } from './components/FullPlayer'
 import type { DetectedVideo } from '../../types'
 
+const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'])
+
 function PreviewPage() {
   const [video, setVideo] = useState<DetectedVideo | null>(null)
 
@@ -19,6 +21,7 @@ function PreviewPage() {
         title: decodeURIComponent(title),
         format: format as DetectedVideo['format'],
         mimeType: '',
+        mediaType: AUDIO_FORMATS.has(format) ? 'audio' : 'video',
         source: 'network',
         pageUrl: '',
         domain: '',

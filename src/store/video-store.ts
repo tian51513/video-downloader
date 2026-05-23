@@ -1,26 +1,45 @@
 import { create } from 'zustand'
-import type { DetectedVideo, VideoFilter } from '../types'
+import type { DetectedVideo, VideoFilter, VideoGroup } from '../types'
+
+const AUDIO_FORMATS_SET = new Set(['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'])
+
+function isAudioFormat(format: string): boolean {
+  return AUDIO_FORMATS_SET.has(format)
+}
+
+function sanitizeTitle(title: string): string {
+  if (!title || title.trim().length === 0) return ''
+  if (/^\d{4,}$/.test(title.trim())) return ''
+  if (/^[0-9a-f]{16,}$/i.test(title.trim())) return ''
+  return title.trim()
+}
 
 interface VideoState {
   videos: DetectedVideo[]
   filteredVideos: DetectedVideo[]
+  videoGroups: VideoGroup[]
+  filteredGroups: VideoGroup[]
   isDetecting: boolean
   currentFilter: VideoFilter
 
   setVideos: (videos: DetectedVideo[]) => void
   addVideo: (video: DetectedVideo) => void
   clearVideos: () => void
+  clearCurrentPageVideos: (pageUrl: string) => void
   setDetecting: (isDetecting: boolean) => void
   setFilter: (filter: Partial<VideoFilter>) => void
   applyFilter: () => void
+  buildGroups: (source: DetectedVideo[]) => VideoGroup[]
 }
 
 export const useVideoStore = create<VideoState>((set, get) => ({
   videos: [],
   filteredVideos: [],
+  videoGroups: [],
+  filteredGroups: [],
   isDetecting: false,
   currentFilter: {
-    formats: ['mp4', 'mkv', 'webm', 'flv', 'hls', 'dash'],
+    formats: ['mp4', 'mkv', 'webm', 'flv', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav'],
     minResolution: 'any',
     minSize: 'any',
     minDuration: 'any',
@@ -43,7 +62,14 @@ export const useVideoStore = create<VideoState>((set, get) => ({
   },
 
   clearVideos: () => {
-    set({ videos: [], filteredVideos: [] })
+    set({ videos: [], filteredVideos: [], videoGroups: [], filteredGroups: [] })
+  },
+
+  clearCurrentPageVideos: (pageUrl) => {
+    set((state) => ({
+      videos: state.videos.filter((v) => v.pageUrl !== pageUrl),
+    }))
+    get().applyFilter()
   },
 
   setDetecting: (isDetecting) => {
@@ -57,14 +83,84 @@ export const useVideoStore = create<VideoState>((set, get) => ({
     get().applyFilter()
   },
 
+  buildGroups: (source) => {
+    const map = new Map<string, DetectedVideo[]>()
+    const ungrouped: DetectedVideo[] = []
+
+    for (const video of source) {
+      const title = sanitizeTitle(video.title)
+      if (!title) {
+        ungrouped.push(video)
+        continue
+      }
+      const key = `${title}|||${video.pageUrl}`
+      let group = map.get(key)
+      if (!group) {
+        group = []
+        map.set(key, group)
+      }
+      group.push(video)
+    }
+
+    const groups: VideoGroup[] = []
+
+    // 多版本分组
+    for (const [, versions] of map) {
+      if (versions.length === 1) {
+        // 单版本也封装为 group
+        groups.push({
+          title: sanitizeTitle(versions[0].title),
+          pageUrl: versions[0].pageUrl,
+          versions: [versions[0]],
+          primaryIndex: 0,
+        })
+      } else {
+        // 多版本：排序
+        const isAudio = isAudioFormat(versions[0].format)
+        const sorted = [...versions]
+        if (isAudio) {
+          // 音频：按码率降序，再按采样率降序
+          sorted.sort((a, b) => {
+            const br = (b.bitrate || 0) - (a.bitrate || 0)
+            if (br !== 0) return br
+            return (b.sampleRate || 0) - (a.sampleRate || 0)
+          })
+        } else {
+          // 视频：按分辨率降序，再按大小降序
+          sorted.sort((a, b) => {
+            const h = (b.height || 0) - (a.height || 0)
+            if (h !== 0) return h
+            return (b.size || 0) - (a.size || 0)
+          })
+        }
+        groups.push({
+          title: sanitizeTitle(versions[0].title),
+          pageUrl: versions[0].pageUrl,
+          versions: sorted,
+          primaryIndex: 0,
+        })
+      }
+    }
+
+    // 无标题的视频各自独立
+    for (const video of ungrouped) {
+      groups.push({
+        title: video.title || '未命名',
+        pageUrl: video.pageUrl,
+        versions: [video],
+        primaryIndex: 0,
+      })
+    }
+
+    return groups
+  },
+
   applyFilter: () => {
     const { videos, currentFilter } = get()
     let result = [...videos]
 
     if (currentFilter.formats.length > 0) {
-      result = result.filter((v) =>
-        currentFilter.formats.includes(v.format)
-      )
+      result = result.filter((v) => currentFilter.formats.includes(v.format))
     }
 
     const resolutionThresholds: Record<string, number> = {
@@ -101,6 +197,7 @@ export const useVideoStore = create<VideoState>((set, get) => ({
         regular: ['mp4', 'mkv', 'flv', 'avi', 'rmvb', 'rm', 'webm', 'mov', 'ts'],
         streaming: ['hls', 'dash'],
         blob: ['blob'],
+        audio: ['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'],
       }
       result = result.filter((v) => typeMap[currentFilter.videoType]?.includes(v.format))
     }
@@ -118,5 +215,9 @@ export const useVideoStore = create<VideoState>((set, get) => ({
     })
 
     set({ filteredVideos: result })
+
+    // 构建分组
+    const groups = get().buildGroups(result)
+    set({ videoGroups: groups, filteredGroups: groups })
   },
 }))

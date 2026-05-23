@@ -15,9 +15,38 @@ export function isGarbled(text: string): boolean {
   return false
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  quot: '"', apos: "'", lsquo: '\u2018', rsquo: '\u2019',
+  ldquo: '\u201c', rdquo: '\u201d', ndash: '\u2013', mdash: '\u2014',
+  amp: '&', lt: '<', gt: '>', nbsp: '\u00a0',
+}
+
+function decodeHtmlEntities(raw: string): string {
+  return raw.replace(/&(\w+);/g, (_m, entity) => {
+    if (entity in HTML_ENTITIES) return HTML_ENTITIES[entity]
+    if (entity[0] === '#') {
+      const code = entity.charAt(1) === 'x'
+        ? parseInt(entity.slice(2), 16)
+        : parseInt(entity.slice(1), 10)
+      if (!isNaN(code) && code > 0) return String.fromCodePoint(code)
+    }
+    return _m[0]
+  })
+}
+
 export function sanitizeName(raw: string): string {
   return raw
     .trim()
+    .replace(/&(\w+);/g, (_m, entity) => {
+      if (entity in HTML_ENTITIES) return HTML_ENTITIES[entity]
+      if (entity[0] === '#') {
+        const code = entity.charAt(1) === 'x'
+          ? parseInt(entity.slice(2), 16)
+          : parseInt(entity.slice(1), 10)
+        if (!isNaN(code) && code > 0) return String.fromCodePoint(code)
+      }
+      return _m[0]
+    })
     .replace(/\s+/g, ' ')
     .replace(/[\\/:*?"<>|]/g, '_')
     .replace(/\.{2,}/g, '.')
