@@ -128,6 +128,15 @@ export async function clearCompletedDownloads(): Promise<void> {
   await persistTasks()
 }
 
+export async function clearCompletedFullDownloads(): Promise<void> {
+  const completedTitles = new Set(
+    downloadQueue.filter((t) => t.status === 'completed').map((t) => t.video.title)
+  )
+  if (completedTitles.size === 0) return
+  downloadQueue = downloadQueue.filter((t) => !completedTitles.has(t.video.title))
+  await persistTasks()
+}
+
 export async function clearFailedDownloads(): Promise<void> {
   downloadQueue = downloadQueue.filter((t) => t.status !== 'failed')
   await persistTasks()
@@ -145,6 +154,16 @@ export async function clearOrphanedDownloads(openPageUrls: string[]): Promise<vo
 
 export async function clearPageDownloads(pageUrl: string): Promise<void> {
   downloadQueue = downloadQueue.filter((t) => t.video.pageUrl !== pageUrl)
+  await persistTasks()
+}
+
+export async function removeDownloadTask(taskId: string): Promise<void> {
+  const entry = activeDownloads.get(taskId)
+  if (entry?.abortController) {
+    entry.abortController.abort()
+  }
+  activeDownloads.delete(taskId)
+  downloadQueue = downloadQueue.filter((t) => t.id !== taskId)
   await persistTasks()
 }
 
@@ -240,14 +259,12 @@ async function processQueue(): Promise<void> {
       updateTaskStatus(next.id, 'downloading')
 
       if (isHls) {
-        // HLS 下载：await 占用槽位
+        // HLS 下载：fire-and-forget，不阻塞队列，允许并发下载多个 HLS 视频
         activeDownloads.set(next.id, { isHls: true })
-        try {
-          await downloadWithChrome(next, settings)
-        } catch (error: any) {
+        downloadWithChrome(next, settings).catch((error: any) => {
           activeDownloads.delete(next.id)
           updateTaskStatus(next.id, 'failed', error.message)
-        }
+        })
       } else {
         // chrome.downloads / aria2 / idm：fire-and-forget，不阻塞队列
         activeDownloads.set(next.id, { isHls: false })
@@ -255,7 +272,6 @@ async function processQueue(): Promise<void> {
           activeDownloads.delete(next.id)
           updateTaskStatus(next.id, 'failed', error.message)
         })
-        // 立即继续处理下一个 pending 任务（不 await）
       }
     }
   } finally {
@@ -271,7 +287,7 @@ async function downloadWithChrome(task: DownloadTask, settings: any): Promise<vo
 
   // HLS 走专用下载器
   if (isHls) {
-    return downloadHLS(task)
+    return downloadHLS(task, settings.downloadSettings.maxConcurrent || 3)
   }
 
   // 设置 Referer 和移除 Content-Disposition
@@ -476,7 +492,7 @@ async function downloadViaSaveHelper(task: DownloadTask): Promise<void> {
 
 // ===== HLS 下载 (非阻塞) =====
 
-async function downloadHLS(task: DownloadTask): Promise<void> {
+async function downloadHLS(task: DownloadTask, concurrency: number): Promise<void> {
   // processQueue 已经设置过 'downloading'，这里不再重复
   const abortController = new AbortController()
   const existing = activeDownloads.get(task.id)
@@ -486,13 +502,16 @@ async function downloadHLS(task: DownloadTask): Promise<void> {
     const result = await downloadHls(
       task,
       abortController.signal,
+      concurrency,
       (progress, speed, downloadedBytes) => {
-        // 广播进度到 UI
-        const updated = { ...task, progress, speed, downloadedBytes }
-        saveDownloads([updated])
+        // 更新 downloadQueue 中的 task 对象，然后保存整个队列
+        task.progress = progress
+        task.speed = speed
+        task.downloadedBytes = downloadedBytes
+        persistTasks()
         chrome.runtime.sendMessage({
           type: 'DOWNLOAD_PROGRESS',
-          payload: updated,
+          payload: task,
         }).catch(() => {})
       },
       (status, error) => {

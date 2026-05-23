@@ -9,12 +9,14 @@ import {
   updateTaskProgressFromPage,
   completeDownloadTask,
   clearCompletedDownloads,
+  clearCompletedFullDownloads,
   clearFailedDownloads,
   clearOrphanedDownloads,
   clearPageDownloads,
+  removeDownloadTask,
 } from './download-manager'
 import type { DetectedVideo, ExtensionMessage } from '../types'
-import { saveVideos, getVideos, clearVideos, getAllVideos, clearAllVideos } from '../utils/storage'
+import { saveVideos, getVideos, clearVideos, getAllVideos, clearAllVideos, clearOrphanedVideos, removeVideosByUrls } from '../utils/storage'
 import { injectorMain } from '../utils/injector-script'
 
 const pageVideos = new Map<string, DetectedVideo[]>()
@@ -303,6 +305,11 @@ async function handleMessage(
       return { success: true }
     }
 
+    case 'CLEAR_COMPLETED_FULL_DOWNLOADS': {
+      await clearCompletedFullDownloads()
+      return { success: true }
+    }
+
     case 'CLEAR_FAILED_DOWNLOADS': {
       await clearFailedDownloads()
       return { success: true }
@@ -311,6 +318,12 @@ async function handleMessage(
     case 'CLEAR_ORPHANED_DOWNLOADS': {
       const urls = message.payload?.openPageUrls || []
       await clearOrphanedDownloads(urls)
+      return { success: true }
+    }
+
+    case 'CLEAR_ORPHANED_VIDEOS': {
+      const urls = message.payload?.openPageUrls || []
+      await clearOrphanedVideos(urls)
       return { success: true }
     }
 
@@ -387,6 +400,18 @@ async function handleMessage(
           chrome.tabs.sendMessage(tab.id, { type: 'DETECT_NOW' }).catch(() => {})
         }
       }
+      return { success: true }
+    }
+
+    case 'REMOVE_DOWNLOAD': {
+      await removeDownloadTask(message.payload.taskId)
+      return { success: true }
+    }
+
+    case 'CLEAR_VIDEOS_BY_URLS': {
+      const urls = message.payload?.urls || []
+      await removeVideosByUrls(urls)
+      updateGlobalBadge()
       return { success: true }
     }
 

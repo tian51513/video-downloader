@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { ConfigProvider, theme, Typography, Space, Button, Badge, Dropdown, Modal, message } from 'antd'
-import { SettingOutlined, AppstoreOutlined, DeleteOutlined, ClearOutlined, CloseCircleOutlined, HistoryOutlined } from '@ant-design/icons'
+import { SettingOutlined, AppstoreOutlined, DeleteOutlined, ClearOutlined, CloseCircleOutlined, HistoryOutlined, ScissorOutlined } from '@ant-design/icons'
 import { useVideoStore } from '../store/video-store'
 import { useSettingsStore } from '../store/settings-store'
 import { useDownloadStore } from '../store/download-store'
@@ -10,9 +10,9 @@ import type { DetectedVideo, ExtensionMessage, DownloadTask } from '../types'
 const { Title, Text } = Typography
 
 function IndexPopup() {
-  const { filteredGroups, isDetecting, setVideos, clearVideos } = useVideoStore()
+  const { filteredGroups, isDetecting, setVideos, clearVideos, clearOrphanedVideos, clearVideosByUrls } = useVideoStore()
   const { settings, loadSettings } = useSettingsStore()
-  const { tasks, addTask, clearCompleted, clearFailed, clearOrphanedTasks, clearPageTasks, removeTask } = useDownloadStore()
+  const { tasks, addTask, clearCompleted, clearCompletedFull, clearFailed, clearOrphanedTasks, clearPageTasks, removeTask } = useDownloadStore()
   const [currentTab, setCurrentTab] = useState('')
 
   useEffect(() => { loadSettings() }, [loadSettings])
@@ -72,7 +72,7 @@ function IndexPopup() {
   }, [])
 
   const handleCancel = useCallback(async (taskId: string) => {
-    chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD', payload: { taskId } })
+    chrome.runtime.sendMessage({ type: 'REMOVE_DOWNLOAD', payload: { taskId } }).catch(() => {})
     removeTask(taskId)
   }, [removeTask])
 
@@ -119,6 +119,22 @@ function IndexPopup() {
     message.success('已清除完成记录')
   }, [clearCompleted])
 
+  const handleClearCompletedFull = useCallback(() => {
+    // 收集需要清除的视频 URL（已完成任务的同名所有版本）
+    const completedTitles = new Set(
+      tasks.filter((t) => t.status === 'completed').map((t) => t.video.title)
+    )
+    const urlsToRemove = tasks
+      .filter((t) => completedTitles.has(t.video.title))
+      .map((t) => t.video.url)
+
+    clearCompletedFull()
+    clearVideosByUrls(urlsToRemove)
+    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_FULL_DOWNLOADS' }).catch(() => {})
+    chrome.runtime.sendMessage({ type: 'CLEAR_VIDEOS_BY_URLS', payload: { urls: urlsToRemove } }).catch(() => {})
+    message.success('已清除完成记录（含同名版本）')
+  }, [tasks, clearCompletedFull, clearVideosByUrls])
+
   const handleClearFailed = useCallback(() => {
     clearFailed()
     chrome.runtime.sendMessage({ type: 'CLEAR_FAILED_DOWNLOADS' }).catch(() => {})
@@ -128,10 +144,12 @@ function IndexPopup() {
   const handleClearOrphaned = useCallback(async () => {
     const tabs = await chrome.tabs.query({})
     const openUrls = tabs.map((t) => t.url || '').filter(Boolean)
+    clearOrphanedVideos(openUrls)
     clearOrphanedTasks(openUrls)
+    chrome.runtime.sendMessage({ type: 'CLEAR_ORPHANED_VIDEOS', payload: { openPageUrls: openUrls } }).catch(() => {})
     chrome.runtime.sendMessage({ type: 'CLEAR_ORPHANED_DOWNLOADS', payload: { openPageUrls: openUrls } }).catch(() => {})
-    message.success('已清除已关闭页面的下载')
-  }, [clearOrphanedTasks])
+    message.success('已清除已关闭页面的视频')
+  }, [clearOrphanedVideos, clearOrphanedTasks])
 
   const downloadingCount = tasks.filter((t) => t.status === 'downloading' || t.status === 'merging').length
 
@@ -157,6 +175,7 @@ function IndexPopup() {
     { key: 'all', icon: <DeleteOutlined />, label: '清除所有视频', onClick: handleClearAllVideos },
     { key: 'current', icon: <DeleteOutlined />, label: '清除当前页面下载', onClick: handleClearCurrentList },
     { key: 'completed', icon: <HistoryOutlined />, label: '清除已完成', onClick: handleClearCompleted },
+    { key: 'completed-full', icon: <ScissorOutlined />, label: '清除已完成(完整)', onClick: handleClearCompletedFull },
     { key: 'failed', icon: <CloseCircleOutlined />, label: '清除失败', onClick: handleClearFailed },
     { key: 'orphaned', icon: <ClearOutlined />, label: '清除已关闭页面', onClick: handleClearOrphaned },
   ]

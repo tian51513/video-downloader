@@ -52,6 +52,33 @@ export async function clearVideos(pageUrl: string): Promise<void> {
   await chrome.storage.local.set({ [VIDEOS_KEY]: all })
 }
 
+export async function clearOrphanedVideos(openPageUrls: string[]): Promise<void> {
+  const urlSet = new Set(openPageUrls)
+  const result = await chrome.storage.local.get(VIDEOS_KEY)
+  const all: Record<string, any[]> = result[VIDEOS_KEY] || {}
+  for (const pageUrl of Object.keys(all)) {
+    if (!urlSet.has(pageUrl)) {
+      delete all[pageUrl]
+    }
+  }
+  await chrome.storage.local.set({ [VIDEOS_KEY]: all })
+}
+
+export async function removeVideosByUrls(urls: string[]): Promise<void> {
+  if (urls.length === 0) return
+  const urlSet = new Set(urls)
+  const result = await chrome.storage.local.get(VIDEOS_KEY)
+  const all: Record<string, any[]> = result[VIDEOS_KEY] || {}
+  for (const pageUrl of Object.keys(all)) {
+    const before = all[pageUrl].length
+    all[pageUrl] = all[pageUrl].filter((v: any) => !urlSet.has(v.url))
+    if (all[pageUrl].length === 0) {
+      delete all[pageUrl]
+    }
+  }
+  await chrome.storage.local.set({ [VIDEOS_KEY]: all })
+}
+
 export async function saveDownloads(downloads: any[]): Promise<void> {
   await chrome.storage.local.set({ [DOWNLOADS_KEY]: downloads })
 }

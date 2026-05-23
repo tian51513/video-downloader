@@ -26,6 +26,8 @@ interface VideoState {
   addVideo: (video: DetectedVideo) => void
   clearVideos: () => void
   clearCurrentPageVideos: (pageUrl: string) => void
+  clearOrphanedVideos: (openPageUrls: string[]) => void
+  clearVideosByUrls: (urls: string[]) => void
   setDetecting: (isDetecting: boolean) => void
   setFilter: (filter: Partial<VideoFilter>) => void
   applyFilter: () => void
@@ -68,6 +70,25 @@ export const useVideoStore = create<VideoState>((set, get) => ({
   clearCurrentPageVideos: (pageUrl) => {
     set((state) => ({
       videos: state.videos.filter((v) => v.pageUrl !== pageUrl),
+    }))
+    get().applyFilter()
+  },
+
+  clearOrphanedVideos: (openPageUrls) => {
+    const urlSet = new Set(openPageUrls)
+    set((state) => ({
+      videos: state.videos.filter((v) => {
+        if (!v.pageUrl) return true
+        return urlSet.has(v.pageUrl)
+      }),
+    }))
+    get().applyFilter()
+  },
+
+  clearVideosByUrls: (urls) => {
+    const urlSet = new Set(urls)
+    set((state) => ({
+      videos: state.videos.filter((v) => !urlSet.has(v.url)),
     }))
     get().applyFilter()
   },

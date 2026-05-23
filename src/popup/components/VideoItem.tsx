@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useCallback } from 'react'
 import { Button, Space, Tag, Typography, Progress } from 'antd'
 import {
   PlayCircleOutlined,
@@ -151,7 +151,7 @@ export const VideoGroupItem: React.FC<VideoGroupItemProps> = ({
   const audio = isAudio(primary)
   const hasMultiple = group.versions.length > 1
 
-  // 查找正在下载/已完成/失败的版本（优先显示在折叠头部）
+  // 查找正在下载/合并的版本
   const activeVersion = useMemo(
     () => group.versions.find((v) => {
       const t = getTaskForVideo(v, downloadTasks)
@@ -159,19 +159,34 @@ export const VideoGroupItem: React.FC<VideoGroupItemProps> = ({
     }),
     [group.versions, downloadTasks]
   )
-  // 折叠头部显示的版本：有活跃下载时显示活跃版本，否则显示主版本
-  const displayVersion = activeVersion || primary
+  // 查找有下载任务的版本（已完成/失败/暂停等）
+  const taskVersion = useMemo(
+    () => group.versions.find((v) => {
+      const t = getTaskForVideo(v, downloadTasks)
+      return t && t.status !== 'pending'
+    }),
+    [group.versions, downloadTasks]
+  )
+  // 折叠头部显示的版本：活跃下载 > 已下载版本 > 主版本
+  const displayVersion = activeVersion || taskVersion || primary
 
-  // 主版本的任务状态
   const primaryTask = useMemo(
     () => getTaskForVideo(primary, downloadTasks),
     [primary, downloadTasks]
   )
-  const primaryActive = primaryTask?.status === 'downloading' || primaryTask?.status === 'merging'
   const activeTask = activeVersion ? getTaskForVideo(activeVersion, downloadTasks) : undefined
-  const activeActive = activeTask?.status === 'downloading' || activeTask?.status === 'merging'
+  const taskVersionTask = taskVersion ? getTaskForVideo(taskVersion, downloadTasks) : undefined
+  // 头部显示的任务：活跃下载 > 已下载版本 > 主版本
+  const headerTask = activeTask || taskVersionTask || primaryTask
+  const isActive = headerTask?.status === 'downloading' || headerTask?.status === 'merging'
   const borderColor = isDark ? '#303030' : '#f0f0f0'
   const bgColor = isDark ? '#1a1a1a' : '#fafafa'
+
+  // 点击下载后自动收敛版本列表
+  const handleDownloadAndCollapse = useCallback((video: DetectedVideo) => {
+    onDownload(video)
+    setExpanded(false)
+  }, [onDownload])
 
   return (
     <div style={{ borderBottom: '1px solid ' + borderColor }}>
@@ -209,46 +224,55 @@ export const VideoGroupItem: React.FC<VideoGroupItemProps> = ({
               {hasMultiple && (
                 <Text type="secondary" style={{ fontSize: 12 }}>{group.versions.length} 个版本</Text>
               )}
+              {headerTask?.status === 'completed' && (
+                <Tag color="success" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>已完成</Tag>
+              )}
+              {headerTask?.status === 'failed' && (
+                <Tag color="error" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>失败</Tag>
+              )}
+              {headerTask?.status === 'paused' && (
+                <Tag color="warning" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>已暂停</Tag>
+              )}
               {hasMultiple && (
                 expanded ? <DownOutlined style={{ fontSize: 10 }} /> : <RightOutlined style={{ fontSize: 10 }} />
               )}
             </Space>
           </div>
           <Space size={2} onClick={(e) => e.stopPropagation()}>
-            {/* 下载进度内联：优先显示活跃版本的进度 */}
-            {activeActive && activeTask && (
+            {/* 下载进度内联 */}
+            {isActive && headerTask && (
               <div style={{ width: 120 }}>
                 <Progress
-                  percent={Math.round(activeTask.progress)}
+                  percent={Math.round(headerTask.progress)}
                   size="small"
                   showInfo={false}
                   strokeColor="#1677ff"
                 />
                 <Text type="secondary" style={{ fontSize: 10 }}>
-                  {activeTask.speed > 0 ? formatSpeed(activeTask.speed) : ''}
+                  {headerTask.speed > 0 ? formatSpeed(headerTask.speed) : ''}
                 </Text>
               </div>
             )}
-            {activeTask?.status === 'completed' && (
+            {headerTask?.status === 'completed' && (
               <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 16 }} />
             )}
-            {!activeActive && !activeTask && !primaryActive && !primaryTask && (
+            {!isActive && !headerTask && (
               <>
                 <Button type="text" size="small" icon={<PlayCircleOutlined />} onClick={() => onPreview(primary)} />
-                <Button type="primary" size="small" icon={<DownloadOutlined />} onClick={() => onDownload(primary)} />
+                <Button type="primary" size="small" icon={<DownloadOutlined />} onClick={() => handleDownloadAndCollapse(primary)} />
               </>
             )}
-            {activeActive && (
+            {isActive && (
               <>
-                <Button type="text" size="small" icon={<PauseCircleOutlined />} onClick={() => onPause(activeTask!.id)} />
-                <Button type="text" size="small" danger icon={<CloseCircleOutlined />} onClick={() => onCancel(activeTask!.id)} />
+                <Button type="text" size="small" icon={<PauseCircleOutlined />} onClick={() => onPause(headerTask!.id)} />
+                <Button type="text" size="small" danger icon={<CloseCircleOutlined />} onClick={() => onCancel(headerTask!.id)} />
               </>
             )}
-            {activeTask?.status === 'failed' && (
-              <Button type="text" size="small" icon={<RedoOutlined />} onClick={() => onRetry(activeTask!.id)} />
+            {headerTask?.status === 'failed' && (
+              <Button type="text" size="small" icon={<RedoOutlined />} onClick={() => onRetry(headerTask!.id)} />
             )}
-            {activeTask?.status === 'paused' && (
-              <Button type="text" size="small" icon={<RedoOutlined />} onClick={() => onRetry(activeTask!.id)} title="继续" />
+            {headerTask?.status === 'paused' && (
+              <Button type="text" size="small" icon={<RedoOutlined />} onClick={() => onRetry(headerTask!.id)} title="继续" />
             )}
           </Space>
         </div>
@@ -263,7 +287,7 @@ export const VideoGroupItem: React.FC<VideoGroupItemProps> = ({
               video={version}
               task={getTaskForVideo(version, downloadTasks)}
               onPreview={onPreview}
-              onDownload={onDownload}
+              onDownload={handleDownloadAndCollapse}
               onPause={onPause}
               onCancel={onCancel}
               onRetry={onRetry}
@@ -272,7 +296,7 @@ export const VideoGroupItem: React.FC<VideoGroupItemProps> = ({
           ))}
           {group.versions.length > 1 && (
             <div style={{ padding: '6px 12px', textAlign: 'center', borderBottom: '1px solid ' + borderColor }}>
-              <Button type="link" size="small" onClick={() => onDownloadGroup(group)}>
+              <Button type="link" size="small" onClick={() => { onDownloadGroup(group); setExpanded(false) }}>
                 全部下载 ({group.versions.length} 个版本)
               </Button>
             </div>
