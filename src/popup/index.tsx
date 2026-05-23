@@ -120,12 +120,9 @@ function IndexPopup() {
   }, [clearCompleted])
 
   const handleClearCompletedFull = useCallback(() => {
-    // 收集需要清除的视频 URL（已完成任务的同名所有版本）
-    const completedTitles = new Set(
-      tasks.filter((t) => t.status === 'completed').map((t) => t.video.title)
-    )
+    // 只收集已完成任务的 URL
     const urlsToRemove = tasks
-      .filter((t) => completedTitles.has(t.video.title))
+      .filter((t) => t.status === 'completed')
       .map((t) => t.video.url)
 
     clearCompletedFull()

@@ -81,17 +81,9 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
   },
 
   clearCompletedFull: () => {
-    set((state) => {
-      // 找出所有已完成任务的 video title
-      const completedTitles = new Set(
-        state.tasks.filter((t) => t.status === 'completed').map((t) => t.video.title)
-      )
-      if (completedTitles.size === 0) return state
-      // 清除所有与已完成任务同 title 的任务（包括未完成的）
-      return {
-        tasks: state.tasks.filter((t) => !completedTitles.has(t.video.title)),
-      }
-    })
+    set((state) => ({
+      tasks: state.tasks.filter((t) => t.status !== 'completed'),
+    }))
   },
 
   clearFailed: () => {

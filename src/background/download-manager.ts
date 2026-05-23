@@ -129,11 +129,7 @@ export async function clearCompletedDownloads(): Promise<void> {
 }
 
 export async function clearCompletedFullDownloads(): Promise<void> {
-  const completedTitles = new Set(
-    downloadQueue.filter((t) => t.status === 'completed').map((t) => t.video.title)
-  )
-  if (completedTitles.size === 0) return
-  downloadQueue = downloadQueue.filter((t) => !completedTitles.has(t.video.title))
+  downloadQueue = downloadQueue.filter((t) => t.status !== 'completed')
   await persistTasks()
 }
 
