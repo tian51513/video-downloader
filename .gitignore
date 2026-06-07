@@ -5,3 +5,8 @@ build/
 .chromium/
 .firefox/
 *.log
+/.scratch
+/.playwright-mcp
+/.codegraph
+/plasmo
+/temp
