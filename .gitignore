@@ -10,3 +10,5 @@ build/
 /.codegraph
 /plasmo
 /temp
+tsconfig.tsbuildinfo
+.claude/
