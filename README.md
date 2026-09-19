@@ -39,6 +39,8 @@ Chrome MV3 扩展，自动检测网页中的视频/音频资源并下载。
 ```bash
 pnpm install
 pnpm dev
+# dev 不经过 postbuild 脚本，需手动执行一次生成 injector.js / offscreen / save-helper:
+node scripts/postbuild.mjs chrome-mv3-dev
 ```
 
 然后在 `chrome://extensions` 加载 `build/chrome-mv3-dev/` 目录。
@@ -70,7 +72,7 @@ pnpm test:watch   # 测试监视模式
 | 语言 | TypeScript 5.6 |
 | UI | React 18 + Ant Design 5 + Zustand 5 |
 | 视频处理 | mux.js 6, hls.js, dashjs |
-| 构建 | Plasmo 内置 (SWC + ESBuild) |
+| 构建 | Plasmo 内置 (SWC + ESBuild) + scripts/postbuild.mjs (injector 打包) |
 | 测试 | Vitest 4 + @testing-library/react |
 | 包管理 | pnpm |
 
@@ -79,19 +81,25 @@ pnpm test:watch   # 测试监视模式
 ```
 src/
 ├── background/      # Service Worker (消息路由、下载管理、HLS 下载)
-├── content/         # Content Script MAIN world (视频检测主路径)
-├── contents/        # Content Script ISOLATED world (消息中转)
+├── contents/        # Content Script ISOLATED world (检测缓存、消息中转)
+├── shared/          # 跨上下文共享纯模块 (格式常量、媒体检测、m3u8 嗅探)
+├── ui/              # UI 共享 (useExtensionBridge 编排桥)
 ├── popup/           # Popup 弹窗 UI
 ├── sidepanel/       # 侧边栏 UI
 ├── options/         # 设置页 UI
 ├── tabs/preview/    # 预览播放器
 ├── store/           # Zustand 状态管理
-├── utils/           # 工具函数 (注入脚本、存储、格式化)
+├── utils/           # 工具函数 (MAIN world 注入脚本、存储、IndexedDB、格式化)
 ├── types/           # TypeScript 类型定义
+├── injector-entry.ts # injector.js 打包入口 (esbuild IIFE)
 └── __tests__/       # Vitest 单元测试
 
 assets/              # Offscreen Document + Save Helper (纯 JS)
+scripts/             # postbuild.mjs (静态资源拷贝 + injector 打包)
 ```
+
+> 视频检测为单路径架构：`utils/injector-script.ts`（MAIN world 注入，esbuild
+> 打包共享 `src/shared/` 模块）+ `contents/detector.ts`（ISOLATED 中转）。
 
 ## Chrome 权限
 
