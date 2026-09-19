@@ -45,6 +45,11 @@ node scripts/postbuild.mjs chrome-mv3-dev
 
 然后在 `chrome://extensions` 加载 `build/chrome-mv3-dev/` 目录。
 
+> **WSL + Windows 混用警告**：本仓库位于 Windows 盘（`F:\`），WSL 和 Windows
+> 的 node_modules 布局互不兼容（pnpm 符号链接 vs junction）。**固定在一侧**
+> 执行所有 `pnpm` / `node` 命令；若曾在另一侧安装过，先删除 `node_modules`
+> 再在本侧重新 `pnpm install`。
+
 ## 使用
 
 1. **浏览网页**: 扩展自动检测页面中的视频/音频资源
