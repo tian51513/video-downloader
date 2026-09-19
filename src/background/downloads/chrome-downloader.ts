@@ -29,6 +29,11 @@ import { setupDownloadRules } from './dnr-rules'
 // chromeDownloadId → intended filename 映射（onDeterminingFilename 安全网）
 const chromeDownloadFilenames = new Map<number, string>()
 
+/** 注册安全网文件名：save-helper 等跨上下文下载经 SW 代下时复用（防 filename 参数被干扰丢弃） */
+export function registerChromeDownloadFilename(downloadId: number, filename: string): void {
+  chromeDownloadFilenames.set(downloadId, filename)
+}
+
 // ===== onDeterminingFilename 安全网 =====
 // 当 declarativeNetRequest 的 Content-Disposition 移除规则未生效时，
 // 通过此回调强制使用我们指定的文件名
@@ -284,6 +289,7 @@ export async function startHlsDownload(task: DownloadTask, concurrency: number):
       updateTaskStatus(task.id, 'completed')
     }
   } catch (error: any) {
+    console.error(`[HLS] 下载失败: ${task.video.title || task.id} — ${error?.message || error}`)
     if (abortController.signal.aborted) {
       updateTaskStatus(task.id, 'paused')
     } else {

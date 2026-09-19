@@ -35,17 +35,37 @@ export async function downloadHls(
   const referrer = task.video.pageUrl || ''
   console.log(`[HLS] 开始下载: ${task.video.title || task.id}, URL: ${task.video.url}, referrer: ${referrer}`)
 
-  // 存量防御：旧检测层可能上报相对 URL（页面 fetch 的原始参数），
-  // SW 中无基准地址无法 fetch——相对 pageUrl 解析为绝对地址
-  let requestUrl = task.video.url
-  if (task.video.pageUrl) {
+  // 存量防御：srcdoc/blob iframe 中的检测层无法解析相对地址（new URL 对
+  // 此类基准抛异常），任务可能携带原始相对字符串。SW 侧用 pageUrl 按
+  // "替换末段"与"追加末段"两种基准语义构造候选按序尝试（无法预知站点用哪种）
+  const candidates = buildRequestCandidates(task.video.url, task.video.pageUrl)
+  let m3u8Text = ''
+  let requestUrl = candidates[0]
+  let lastM3u8Error: unknown
+  for (let i = 0; i < candidates.length; i++) {
     try {
-      requestUrl = new URL(task.video.url, task.video.pageUrl).href
-    } catch { /* 保留原样 */ }
+      m3u8Text = await fetchWithRetry(
+        candidates[i], signal, retryCount, timeout, referrer,
+        async (response) => await response.text()
+      )
+      requestUrl = candidates[i]
+      if (candidates.length > 1) {
+        console.log(`[HLS] m3u8 候选地址命中 (${i + 1}/${candidates.length}): ${requestUrl}`)
+      }
+      break
+    } catch (error: any) {
+      if (error?.name === 'AbortError') throw error
+      lastM3u8Error = error
+      if (candidates.length > 1) {
+        console.warn(`[HLS] m3u8 候选地址失败 (${i + 1}/${candidates.length}): ${candidates[i]} → ${error.message}`)
+      }
+    }
   }
-
-  const m3u8Response = await fetchWithTimeout(requestUrl, signal, timeout, referrer)
-  const m3u8Text = await m3u8Response.text()
+  if (!m3u8Text) {
+    throw new Error(
+      `m3u8 获取失败（已试 ${candidates.length} 个地址: ${candidates.join(' | ')}）: ${(lastM3u8Error as any)?.message || lastM3u8Error}`
+    )
+  }
 
   let playlist = parseM3u8(m3u8Text, requestUrl)
   console.log(`[HLS] m3u8 解析完成, 类型: ${playlist.type}`)
@@ -54,8 +74,10 @@ export async function downloadHls(
   if (playlist.type === 'master') {
     const variant = selectVariant(playlist)
     console.log(`[HLS] 主播放列表，选择变体: ${variant.resolution || ''} ${variant.bandwidth}bps → ${variant.url}`)
-    const variantResponse = await fetchWithTimeout(variant.url, signal, timeout, referrer)
-    const variantText = await variantResponse.text()
+    const variantText = await fetchWithRetry(
+      variant.url, signal, retryCount, timeout, referrer,
+      async (response) => await response.text()
+    )
     playlist = parseM3u8(variantText, variant.url)
   }
 
@@ -95,7 +117,10 @@ export async function downloadHls(
   if (mediaPlaylist.encryption && mediaPlaylist.encryption.method === 'AES-128') {
     console.log(`[HLS] 开始 AES-128 解密, 密钥 URL: ${mediaPlaylist.encryption.keyUrl}`)
     onStatusChange('merging')
-    await decryptSegments(segmentBuffers, segments, mediaPlaylist.encryption.keyUrl, signal, referrer)
+    await decryptSegments(
+      segmentBuffers, segments, mediaPlaylist.encryption.keyUrl,
+      signal, referrer, retryCount, timeout
+    )
     console.log('[HLS] 解密完成')
   }
 
@@ -103,6 +128,10 @@ export async function downloadHls(
   onStatusChange('merging')
   console.log('[HLS] 开始封装 MP4...')
   const mp4Data = await remuxToMp4(segmentBuffers, mediaPlaylist, signal, referrer)
+  // 修补 mvhd/mehd 时长与创建时间——init segment 的元数据是占位值，
+  // 播放器/资源管理器会据此显示 0 时长与 1904 年日期
+  const totalDuration = segments.reduce((sum, seg) => sum + (seg.duration || 0), 0)
+  patchMp4Metadata(mp4Data, totalDuration)
   console.log(`[HLS] MP4 封装完成, 大小: ${formatBytes(mp4Data.byteLength)}`)
 
   // Step 5: 保存
@@ -133,7 +162,16 @@ export async function downloadHls(
   // 优先使用用户选择的目录句柄直接写入
   try {
     const dirHandle = await getDirectoryHandle(DOWNLOAD_DIR)
+    // 权限预检：浏览器重启后句柄权限会回退，SW 中没有 user activation
+    // 无法 requestPermission，直接写入只会得到 NotAllowedError——
+    // 未授权时跳过，交给 save-helper 页面引导用户一键重新授权
+    let dirPerm: string | undefined
     if (dirHandle) {
+      try {
+        dirPerm = await (dirHandle as any).queryPermission({ mode: 'readwrite' })
+      } catch { dirPerm = 'prompt' }
+    }
+    if (dirHandle && dirPerm === 'granted') {
       console.log('[HLS] 使用目录句柄直接写入')
       const fileHandle = await dirHandle.getFileHandle(filename, { create: true })
       const writable = await fileHandle.createWritable()
@@ -141,6 +179,9 @@ export async function downloadHls(
       await writable.close()
       console.log(`[HLS] 文件保存成功: ${filename}`)
       return { savedFileName: filename }
+    }
+    if (dirHandle) {
+      console.log('[HLS] 目录句柄权限未授予（重启后会回退），转由保存页引导重新授权')
     }
   } catch (dirError: any) {
     console.warn('[HLS] 目录句柄写入失败，尝试降级方案:', dirError.message)
@@ -431,15 +472,18 @@ async function decryptSegments(
   segments: Array<{ key?: { method: string; iv?: Uint8Array } }>,
   keyUrl: string,
   signal: AbortSignal,
-  referrer?: string
+  referrer?: string,
+  retryCount?: number,
+  timeout?: number
 ): Promise<void> {
-  const fetchOpts: RequestInit = { signal }
-  if (referrer) {
-    fetchOpts.referrer = referrer
-    fetchOpts.referrerPolicy = 'unsafe-url'
+  let keyData: ArrayBuffer
+  try {
+    keyData = await fetchWithRetry(
+      keyUrl, signal, retryCount ?? 3, timeout ?? 30000, referrer
+    )
+  } catch (error: any) {
+    throw new Error(`AES-128 密钥获取失败: ${error.message}`)
   }
-  const keyResponse = await fetch(keyUrl, fetchOpts)
-  const keyData = await keyResponse.arrayBuffer()
   const key = await crypto.subtle.importKey('raw', keyData, { name: 'AES-CBC' }, false, ['decrypt'])
 
   for (let i = 0; i < buffers.length; i++) {
@@ -455,7 +499,145 @@ async function decryptSegments(
   }
 }
 
+// ===== MP4 元数据修补 =====
+
+/**
+ * 修补 fMP4 直拼产物的元数据（原位改写，返回同一 buffer）：
+ * init segment 的 mvhd/mehd 时长常为 0/占位值、创建时间为 0（Mac epoch →
+ * 资源管理器显示 1904 年），播放器与文件属性据此显示错误时长/日期。
+ * 解析失败时静默原样返回（元数据缺陷不影响可播放性，不阻塞保存）。
+ */
+export function patchMp4Metadata(buffer: ArrayBuffer, totalDurationSec: number): ArrayBuffer {
+  if (totalDurationSec <= 0 || buffer.byteLength < 16) return buffer
+  const view = new DataView(buffer)
+  const MAC_EPOCH_OFFSET = 2082844800 // 1904-01-01 → 1970-01-01 秒差
+  const now = Math.floor(Date.now() / 1000) + MAC_EPOCH_OFFSET
+
+  const setU32 = (offset: number, value: number) => {
+    try { view.setUint32(offset, value) } catch { /* 越界忽略 */ }
+  }
+  const setU64 = (offset: number, value: number) => {
+    // 时长/时间戳写高 32 位 + 低 32 位（v1 box 的 64 位字段）
+    setU32(offset, Math.floor(value / 2 ** 32))
+    setU32(offset + 4, value >>> 0)
+  }
+  const clampDuration = (timescale: number) =>
+    Math.min(Math.round(totalDurationSec * timescale), 0xfffffffe)
+
+  // 先取 mvhd timescale（mehd 的时长单位与 mvhd 相同；v0 位于 +12，v1 位于 +20）
+  let movieTimescale = 0
+  eachBox(view, 0, buffer.byteLength, (type, contentOff, _size) => {
+    if (type === 'mvhd' && !movieTimescale) {
+      const version = view.getUint8(contentOff)
+      movieTimescale = view.getUint32(contentOff + (version === 1 ? 20 : 12))
+    }
+  })
+  if (!movieTimescale) return buffer
+
+  const durationUnits = clampDuration(movieTimescale)
+  eachBox(view, 0, buffer.byteLength, (type, contentOff, _size) => {
+    const version = view.getUint8(contentOff)
+    if (type === 'mvhd') {
+      if (version === 1) {
+        setU64(contentOff + 4, now) // creation_time
+        setU64(contentOff + 12, now) // modification_time
+        // timescale@20, duration@24 (64-bit)
+        setU64(contentOff + 24, durationUnits)
+      } else {
+        setU32(contentOff + 4, now)
+        setU32(contentOff + 8, now)
+        // timescale@12, duration@16 (32-bit)
+        setU32(contentOff + 16, durationUnits)
+      }
+    } else if (type === 'mehd' && movieTimescale) {
+      // mvex 内的 fragment 总时长，单位同 mvhd timescale
+      if (version === 1) {
+        setU64(contentOff + 4, durationUnits)
+      } else {
+        setU32(contentOff + 4, durationUnits)
+      }
+    } else if (type === 'tkhd') {
+      // 轨道时长，单位同 mvhd timescale（资源管理器逐轨读取）
+      if (version === 1) {
+        setU64(contentOff + 28, durationUnits)
+      } else {
+        setU32(contentOff + 20, durationUnits)
+      }
+    } else if (type === 'mdhd') {
+      // 轨道媒体时长：timescale/duration 是各轨道自己的（单位与 mvhd 不同）。
+      // 个别播放器（如夸克）优先读 mdhd，漏补会显示 20+ 小时垃圾时长
+      if (version === 1) {
+        setU64(contentOff + 4, now)
+        setU64(contentOff + 12, now)
+        const mediaTimescale = view.getUint32(contentOff + 20)
+        if (mediaTimescale > 0) {
+          setU64(contentOff + 24, clampDuration(mediaTimescale))
+        }
+      } else {
+        setU32(contentOff + 4, now)
+        setU32(contentOff + 8, now)
+        const mediaTimescale = view.getUint32(contentOff + 12)
+        if (mediaTimescale > 0) {
+          setU32(contentOff + 16, clampDuration(mediaTimescale))
+        }
+      }
+    }
+  })
+  return buffer
+}
+
+/** 遍历顶层及容器 box（moov/trak/mdia/mvex/minf/stbl），回调 (类型, 内容偏移, 总大小) */
+function eachBox(
+  view: DataView,
+  start: number,
+  end: number,
+  fn: (type: string, contentOff: number, size: number) => void
+): void {
+  const CONTAINERS = new Set(['moov', 'trak', 'mdia', 'mvex', 'minf', 'stbl'])
+  let off = start
+  while (off + 8 <= end) {
+    let size = view.getUint32(off)
+    const type = String.fromCharCode(
+      view.getUint8(off + 4), view.getUint8(off + 5), view.getUint8(off + 6), view.getUint8(off + 7)
+    )
+    let headerSize = 8
+    if (size === 1) {
+      if (off + 16 > end) return
+      size = view.getUint32(off + 8) * 2 ** 32 + view.getUint32(off + 12)
+      headerSize = 16
+    } else if (size === 0) {
+      size = end - off
+    }
+    if (size < headerSize || off + size > end) return
+    fn(type, off + headerSize, size)
+    if (CONTAINERS.has(type)) {
+      eachBox(view, off + headerSize, off + size, fn)
+    }
+    off += size
+  }
+}
+
 // ===== 工具函数 =====
+
+/**
+ * 相对 URL 的绝对化候选（见 downloadHls Step 1 注释）：
+ * - 绝对 URL 原样返回
+ * - 相对 URL 依次尝试 pageUrl 的"替换末段"与"追加末段"两种基准语义
+ * - 基准不可解析时回退原始字符串（fetch 会失败，但错误信息带地址可定位）
+ */
+function buildRequestCandidates(rawUrl: string, pageUrl?: string): string[] {
+  if (/^https?:\/\//i.test(rawUrl)) return [rawUrl]
+  if (!pageUrl) return [rawUrl]
+  const candidates: string[] = []
+  const bases = [pageUrl, pageUrl.endsWith('/') ? pageUrl : pageUrl + '/']
+  for (const base of bases) {
+    try {
+      const absolute = new URL(rawUrl, base).href
+      if (!candidates.includes(absolute)) candidates.push(absolute)
+    } catch { /* 基准不可解析，跳过 */ }
+  }
+  return candidates.length > 0 ? candidates : [rawUrl]
+}
 
 async function fetchWithTimeout(
   url: string,
@@ -483,21 +665,27 @@ async function fetchWithTimeout(
   return response
 }
 
-async function fetchWithRetry(
+async function fetchWithRetry<T = ArrayBuffer>(
   url: string,
   signal: AbortSignal,
   retries: number,
   timeout: number,
-  referrer?: string
-): Promise<ArrayBuffer> {
+  referrer?: string,
+  read: (response: Response) => Promise<T> = async (response) =>
+    (await response.arrayBuffer()) as T
+): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
     try {
       const response = await fetchWithTimeout(url, signal, timeout, referrer)
-      return await response.arrayBuffer()
+      return await read(response)
     } catch (error: any) {
       if (error.name === 'AbortError') throw error
-      if (attempt === retries) throw error
+      if (attempt === retries) {
+        // 网络级 TypeError 默认只有裸 "Failed to fetch"，附带地址便于定位
+        const msg = error.message || String(error)
+        throw new Error(msg.includes(url) ? msg : `${msg} [${url}]`)
+      }
     }
   }
   throw new Error('下载重试次数已用尽')

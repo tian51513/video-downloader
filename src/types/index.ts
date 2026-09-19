@@ -103,6 +103,9 @@ export interface BlacklistRule {
 // ===== 过滤 =====
 
 export type FilterResolution = 'any' | '4k' | '1080p' | '720p' | '480p' | '360p'
+
+/** 指定分辨率（精确档位匹配；与 minResolution 阈值筛选可叠加） */
+export type FilterExactResolution = 'any' | '4k' | '1440p' | '1080p' | '720p' | '480p' | '360p' | 'low'
 export type FilterSize = 'any' | '10mb' | '50mb' | '100mb' | '500mb'
 export type FilterDuration = 'any' | '1min' | '5min' | '10min' | '30min'
 export type FilterVideoType = 'all' | 'regular' | 'streaming' | 'blob' | 'audio'
@@ -110,6 +113,7 @@ export type FilterVideoType = 'all' | 'regular' | 'streaming' | 'blob' | 'audio'
 export interface VideoFilter {
   formats: MediaFormat[]
   minResolution: FilterResolution
+  exactResolution: FilterExactResolution
   minSize: FilterSize
   minDuration: FilterDuration
   sources: string[]
@@ -188,6 +192,8 @@ export type MessageType =
   | 'PAGE_DOWNLOAD_DONE'
   | 'SAVE_HELPER_DONE'
   | 'SAVE_HELPER_PROGRESS'
+  | 'SAVE_VIA_CHROME_DOWNLOADS'
+  | 'SUPPRESS_FRAGMENTS'
   | 'RESCAN_ALL_TABS'
   | 'SAVE_HELPER_FETCH_DOWNLOAD'
   | 'REMOVE_DOWNLOAD'
@@ -225,6 +231,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   filter: {
     formats: ['mp4', 'mkv', 'webm', 'flv', 'hls', 'dash', 'mp3', 'm4a', 'flac', 'ogg', 'wav'],
     minResolution: 'any',
+    exactResolution: 'any',
     minSize: 'any',
     minDuration: 'any',
     sources: [],

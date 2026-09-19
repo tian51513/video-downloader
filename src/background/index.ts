@@ -16,8 +16,9 @@ import {
   clearPageDownloads,
   removeDownloadTask,
 } from './download-manager'
+import { registerChromeDownloadFilename } from './downloads/chrome-downloader'
 import type { DetectedVideo, ExtensionMessage } from '../types'
-import { saveVideos, getVideos, clearVideos, getAllVideos, clearAllVideos, clearOrphanedVideos, removeVideosByUrls } from '../utils/storage'
+import { saveVideos, getVideos, clearVideos, getAllVideos, clearAllVideos, clearOrphanedVideos, removeVideosByUrls, removeVideosByDownloads, downloadMatcher } from '../utils/storage'
 
 const pageVideos = new Map<string, DetectedVideo[]>()
 
@@ -195,6 +196,36 @@ async function supplementVideoSizes(videos: DetectedVideo[]): Promise<DetectedVi
   return videos.map((v) => updatedMap.get(v.url) || v)
 }
 
+// ===== 清除已完成 → 检测列表组级移除 =====
+
+/** 快照当前已完成任务的视频信息（须在任务记录清除前调用） */
+async function snapshotCompletedTasks(): Promise<Array<{ url: string; pageUrl?: string; title?: string }>> {
+  const all = await getAllDownloadTasks()
+  return all
+    .filter((t) => t.status === 'completed')
+    .map((t) => ({ url: t.video.url, pageUrl: t.video.pageUrl, title: t.video.title }))
+}
+
+/** 从检测列表移除已完成视频（storage + 内存缓存，组级语义见 downloadMatcher） */
+async function removeCompletedVideosFromDetection(
+  completed: Array<{ url: string; pageUrl?: string; title?: string }>
+): Promise<void> {
+  if (completed.length === 0) return
+  await removeVideosByDownloads(completed)
+  // pageVideos 内存缓存同步清理：GET_VIDEOS 会合并内存+storage，
+  // 不清会把已移除的视频"复活"
+  const matched = downloadMatcher(completed)
+  for (const pageUrl of Array.from(pageVideos.keys())) {
+    const kept = (pageVideos.get(pageUrl) || []).filter((v) => !matched(v))
+    if (kept.length > 0) {
+      pageVideos.set(pageUrl, kept)
+    } else {
+      pageVideos.delete(pageUrl)
+    }
+  }
+  updateGlobalBadge()
+}
+
 // ===== 消息路由 =====
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, sender, sendResponse) => {
@@ -219,8 +250,16 @@ export async function handleMessage(
       // 补充缺失的文件大小（HEAD 请求）
       const updatedVideos = await supplementVideoSizes(videos)
 
-      pageVideos.set(pageUrl, updatedVideos)
-      await saveVideos(pageUrl, updatedVideos)
+      // 按 id 并集合并而非整页覆写：同页多个 iframe（srcdoc 播放器共享
+      // about:srcdoc 这类批量 key）或 SPA 跳转时，各 detector 只持有自己
+      // 的检测子集——覆写会互相抹除，表现为"打开新页面后旧记录消失"
+      const existing = pageVideos.get(pageUrl) || (await getVideos(pageUrl))
+      const byId = new Map(existing.map((v: any) => [v.id, v]))
+      for (const video of updatedVideos) byId.set(video.id, video)
+      const merged = Array.from(byId.values())
+
+      pageVideos.set(pageUrl, merged)
+      await saveVideos(pageUrl, merged)
 
       // 更新全局 badge（去重 URL 后的总数）
       updateGlobalBadge()
@@ -228,7 +267,26 @@ export async function handleMessage(
       // 广播更新后的视频列表
       chrome.runtime.sendMessage({
         type: 'VIDEO_DETECTED',
-        payload: { pageUrl, videos: updatedVideos },
+        payload: { pageUrl, videos: merged },
+      }).catch(() => {})
+      return { success: true }
+    }
+
+    case 'SUPPRESS_FRAGMENTS': {
+      // 分片召回的显式删除：m3u8 解析确认这些 URL 是 HLS 流分片而非独立
+      // 视频（VIDEO_DETECTED 已改并集合并，删除不能依赖覆写语义）
+      const { pageUrl, urls } = message.payload
+      if (!urls?.length) return { success: true }
+      await removeVideosByUrls(urls)
+      const key = pageUrl || ''
+      const kept = (pageVideos.get(key) || []).filter((v) => !urls.includes(v.url))
+      if (kept.length > 0 || pageVideos.has(key)) {
+        pageVideos.set(key, kept)
+      }
+      updateGlobalBadge()
+      chrome.runtime.sendMessage({
+        type: 'VIDEO_DETECTED',
+        payload: { pageUrl: key, videos: kept },
       }).catch(() => {})
       return { success: true }
     }
@@ -294,12 +352,18 @@ export async function handleMessage(
     }
 
     case 'CLEAR_COMPLETED_DOWNLOADS': {
+      // 快照须先于清记录：已完成视频要从检测列表组级移除（含未下载的
+      // 兄弟版本），任务记录随后即被清除
+      const completed = await snapshotCompletedTasks()
       await clearCompletedDownloads()
+      await removeCompletedVideosFromDetection(completed)
       return { success: true }
     }
 
     case 'CLEAR_COMPLETED_FULL_DOWNLOADS': {
+      const completed = await snapshotCompletedTasks()
       await clearCompletedFullDownloads()
+      await removeCompletedVideosFromDetection(completed)
       return { success: true }
     }
 
@@ -373,6 +437,25 @@ export async function handleMessage(
       const progress = total > 0 ? (loaded / total) * 100 : undefined
       await updateTaskProgressFromPage(taskId, progress, speed, loaded, total)
       return { success: true }
+    }
+
+    case 'SAVE_VIA_CHROME_DOWNLOADS': {
+      // save-helper 的 SW 代下载：注册 onDeterminingFilename 安全网强制
+      // 指定文件名——页面侧 chrome.downloads 的 filename 参数可能被其它
+      // 下载管理扩展/无手势 <a download> 降级干扰丢弃，导致 blob UUID 命名
+      const { blobUrl, filename } = message.payload
+      try {
+        const downloadId = await chrome.downloads.download({
+          url: blobUrl,
+          filename,
+          saveAs: false,
+          conflictAction: 'uniquify',
+        })
+        registerChromeDownloadFilename(downloadId, filename)
+        return { success: true, downloadId }
+      } catch (error: any) {
+        return { success: false, error: error?.message || String(error) }
+      }
     }
 
     // ===== 重新扫描所有标签页 =====

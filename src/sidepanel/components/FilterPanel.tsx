@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Collapse, Checkbox, Select, Button, Space, Typography } from 'antd'
 import { FilterOutlined, UndoOutlined } from '@ant-design/icons'
+import { TIER_LABELS, type ResolutionTier } from '../../utils/resolution'
 import type { VideoFilter, MediaFormat } from '../../types'
 
 const { Text } = Typography
@@ -8,13 +9,15 @@ const { Text } = Typography
 interface FilterPanelProps {
   filter: VideoFilter
   availableSources: string[]
+  /** 当前列表实际存在的分辨率档位（动态选项；批量下载指定档时据此择优） */
+  availableResolutions?: string[]
   onFilterChange: (filter: Partial<VideoFilter>) => void
   onReset: () => void
 }
 
 const ALL_FORMATS: MediaFormat[] = ['mp4', 'mkv', 'webm', 'flv', 'avi', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav']
 
-export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSources, onFilterChange, onReset }) => {
+export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSources, availableResolutions = [], onFilterChange, onReset }) => {
   const [collapsed, setCollapsed] = useState(true)
 
   return (
@@ -45,6 +48,17 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSourc
               <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>最低分辨率</Text>
               <Select value={filter.minResolution} onChange={(val) => onFilterChange({ minResolution: val })} style={{ width: '100%' }} size="small"
                 options={[{ label: '不限', value: 'any' }, { label: '≥ 4K', value: '4k' }, { label: '≥ 1080p', value: '1080p' }, { label: '≥ 720p', value: '720p' }, { label: '≥ 480p', value: '480p' }, { label: '≥ 360p', value: '360p' }]} />
+            </div>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>指定分辨率（批量下载只下该档版本，无匹配自动降档）</Text>
+              <Select value={filter.exactResolution} onChange={(val) => onFilterChange({ exactResolution: val })} style={{ width: '100%' }} size="small"
+                options={[
+                  { label: '不限', value: 'any' },
+                  ...availableResolutions.map((t) => ({
+                    label: TIER_LABELS[t as ResolutionTier] || t,
+                    value: t,
+                  })),
+                ]} />
             </div>
             <div>
               <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>最小大小</Text>

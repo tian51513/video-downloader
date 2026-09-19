@@ -8,12 +8,13 @@
  * 通信只能走 window.postMessage。
  */
 
-import { HLS_CONTENT_TYPES, isAudioFormat } from '../shared/formats'
+import { isAudioFormat } from '../shared/formats'
 import {
   isM3u8Master,
   parseM3u8Master,
   parseM3u8MediaDuration,
   estimateFileSize,
+  collectSegmentUrls,
 } from '../shared/hls-sniff'
 import { detectFormatFromUrl, isMediaRequest, normalizeReportUrl } from '../shared/media-detect'
 
@@ -99,6 +100,21 @@ export function injectorMain(): void {
         }
       }
     } else {
+      // 分片登记须先于下方去重早退：变体播放列表可能已在 master 分支报过
+      // （reportedUrls 命中直接 return），但其分片仍需登记以便抑制后续上报
+      const fragments = collectSegmentUrls(content, url)
+      for (const fragmentUrl of fragments) {
+        hlsFragmentUrls.add(fragmentUrl)
+      }
+      // 召回旧条目：旧版本/其它路径可能已把分片当独立视频存入检测缓存，
+      // 通知 ISOLATED detector 移除（其整页覆写语义会同步清理 background
+      // 与 storage，列表自愈，无需手动清缓存）
+      if (fragments.length > 0) {
+        window.postMessage({
+          type: 'VIDEO_DOWNLOADER_SUPPRESS',
+          payload: { urls: fragments },
+        }, '*')
+      }
       // media playlist: 提取 targetDuration 作为预估时长
       const targetDuration = parseM3u8MediaDuration(content)
       // 尝试累加 #EXTINF 获取更准确的时长
@@ -111,6 +127,10 @@ export function injectorMain(): void {
         }
       }
       const duration = totalDuration > 0 ? totalDuration : (targetDuration > 0 ? targetDuration : undefined)
+      // 变体播放列表的实际请求 URL 可能被播放器 xhrSetup 加查询参数重写
+      // （如 acgnfl CDN 的 from=/m=/t=），与 master 分支登记的裸 URL 不同——
+      // 按 origin+pathname 判重，避免同一变体重复上报
+      if (isSamePathReported(url)) return
       // 在 iframe 中时，手动构建带 pageUrl 的报告
       if (isInIframe) {
         if (reportedUrls[url]) return
@@ -134,6 +154,20 @@ export function injectorMain(): void {
         reportVideoWithMeta(url, 'hls', contentType, 'network', undefined, undefined, duration)
       }
     }
+  }
+
+  /** origin+pathname 级判重：同一资源被查询参数重写后仍视为已上报 */
+  function isSamePathReported(url: string): boolean {
+    try {
+      const u = new URL(url)
+      for (const key of Object.keys(reportedUrls)) {
+        try {
+          const k = new URL(key)
+          if (k.origin === u.origin && k.pathname === u.pathname) return true
+        } catch { /* 忽略非法 key */ }
+      }
+    } catch { /* 忽略非法 url */ }
+    return false
   }
 
   // ===== xHamster CDN multi-quality URL 解析 =====
@@ -223,6 +257,10 @@ export function injectorMain(): void {
 
   // ===== 去重 =====
   const reportedUrls: Record<string, boolean> = {}
+
+  // HLS 分片 URL 集合：m3u8 解析时登记——播放器逐分片加载时网络钩子
+  // 命中即抑制上报，避免分片被当独立视频淹没版本面板（acgxmh.com 实测）
+  const hlsFragmentUrls = new Set<string>()
 
   // ===== 通信 =====
   function sendToIsolated(video: any): void {
@@ -356,6 +394,9 @@ export function injectorMain(): void {
   ): void {
     // 所有上报的汇聚咽喉：统一把相对 URL 解析为绝对地址（去重也按绝对地址）
     url = normalizeReportUrl(url, window.location.href)
+    // HLS 分片抑制：命中 m3u8 解析时登记的分片集合——分片是流的组成部分，
+    // 不是独立视频（否则 hls.js 逐分片加载会把版本面板淹没成分块列表）
+    if (hlsFragmentUrls.has(url)) return
     if (reportedUrls[url]) return
     reportedUrls[url] = true
     if (url.length < 10) return
@@ -403,29 +444,19 @@ export function injectorMain(): void {
         if (checkAndReportMultiQuality(url, '')) {
           // 已上报所有画质变体，无需再解析 m3u8 内容
         } else {
-        // HLS: 等 readyState 4 读取 responseText 解析 m3u8 内容
+        // HLS: 等 readyState 4 读内容解析。content-type 只是提示——不少 CDN
+        // 用 octet-stream/text-plain 返回 m3u8，一律读文本按 #EXTM3U 判定
         xhr.addEventListener('readystatechange', function () {
           if (xhr.readyState === 4) {
             const ct = xhr.getResponseHeader('content-type') || ''
-            let isHls = false
-            for (let i = 0; i < HLS_CONTENT_TYPES.length; i++) {
-              if (ct.toLowerCase().includes(HLS_CONTENT_TYPES[i])) { isHls = true; break }
-            }
-            if (!isHls) {
-              // content-type 不匹配但 URL 是 .m3u8，仍按 hls 报告
-              reportVideoWithMeta(url, 'hls', ct, 'network')
-              return
-            }
             try {
               const text = xhr.responseText || ''
-              if (text.length > 0) {
+              if (text.length > 0 && text.includes('#EXTM3U')) {
                 reportHlsFromContent(url, text, ct)
-              } else {
-                reportVideoWithMeta(url, 'hls', ct, 'network')
+                return
               }
-            } catch {
-              reportVideoWithMeta(url, 'hls', ct, 'network')
-            }
+            } catch { /* responseText 不可用（如 arraybuffer），按 URL 上报 */ }
+            reportVideoWithMeta(url, 'hls', ct, 'network')
           }
         })
         } // end else (normal HLS)
@@ -459,16 +490,12 @@ export function injectorMain(): void {
         if (checkAndReportMultiQuality(url, '')) {
           // 已上报所有画质变体，无需再解析 m3u8 内容
         } else {
-        // HLS: clone response 并读取 text 解析 m3u8
+        // HLS: clone response 读文本，按 #EXTM3U 判定（content-type 不可靠，
+        // 不少 CDN 用 octet-stream/text-plain 返回 m3u8）
         promise.then(function (response: Response) {
           const ct = response.headers.get('content-type') || ''
-          let isHls = false
-          for (let i = 0; i < HLS_CONTENT_TYPES.length; i++) {
-            if (ct.toLowerCase().includes(HLS_CONTENT_TYPES[i])) { isHls = true; break }
-          }
-          if (!isHls && !url.toLowerCase().includes('.m3u8')) return
           response.clone().text().then(function (text) {
-            if (text.length > 0) {
+            if (text.length > 0 && text.includes('#EXTM3U')) {
               reportHlsFromContent(url, text, ct)
             } else {
               reportVideoWithMeta(url, 'hls', ct, 'network')

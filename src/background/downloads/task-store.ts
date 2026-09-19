@@ -8,6 +8,7 @@
 
 import type { DetectedVideo, DownloadTask } from '../../types'
 import { saveDownloads, getDownloads } from '../../utils/storage'
+import { recordDownloaded } from './downloaded-registry'
 
 export interface ActiveDownloadEntry {
   abortController?: AbortController
@@ -100,6 +101,10 @@ export function updateTaskStatus(
   if (status === 'completed' || status === 'failed') {
     task.completedAt = Date.now()
   }
+  if (status === 'completed') {
+    // 持久化已下载清单（批量去重记忆，独立于任务记录，清除记录不清清单）
+    void recordDownloaded(task.video)
+  }
 
   broadcastDownloadUpdate(task)
   persistTasks()
@@ -158,6 +163,8 @@ export async function completeDownloadTask(
   task.status = 'completed'
   task.completedAt = Date.now()
   if (chromeDownloadId) task.chromeDownloadId = chromeDownloadId
+  // 持久化已下载清单（批量去重记忆，独立于任务记录，清除记录不清清单）
+  void recordDownloaded(task.video)
 
   await persistTasks()
   broadcastDownloadUpdate(task)

@@ -68,6 +68,29 @@ export function parseM3u8MediaDuration(content: string): number {
   return 0
 }
 
+/**
+ * 提取 media playlist 的分片绝对 URL（含 #EXT-X-MAP 的 init segment）。
+ * 用途：HLS 播放器（hls.js 等）逐分片加载时，网络钩子会把每个分片当
+ * 独立 ts/m4s 视频上报、淹没版本面板——解析播放列表时先登记分片集合，
+ * 后续按 URL 命中即抑制上报。
+ */
+export function collectSegmentUrls(content: string, baseUrl: string): string[] {
+  const urls: string[] = []
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.startsWith('#')) {
+      if (line.startsWith('#EXT-X-MAP:')) {
+        const match = line.match(/URI="([^"]+)"/)
+        if (match?.[1]) urls.push(resolveUrl(match[1], baseUrl))
+      }
+      continue
+    }
+    urls.push(resolveUrl(line, baseUrl))
+  }
+  return urls
+}
+
 export function estimateFileSize(bitrate: number, durationSeconds: number): number {
   return Math.round((bitrate * durationSeconds) / 8)
 }

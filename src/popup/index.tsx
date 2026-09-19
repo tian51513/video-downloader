@@ -60,8 +60,8 @@ function IndexPopup() {
   const clearMenuItems = [
     { key: 'all', icon: <DeleteOutlined />, label: '清除所有视频', onClick: clearAllVideos },
     { key: 'current', icon: <DeleteOutlined />, label: '清除当前页面下载', onClick: clearCurrentPageDownloads },
-    { key: 'completed', icon: <HistoryOutlined />, label: '清除已完成', onClick: clearCompleted },
-    { key: 'completed-full', icon: <ScissorOutlined />, label: '清除已完成(完整)', onClick: clearCompletedFull },
+    { key: 'completed', icon: <HistoryOutlined />, label: '清除已完成和失败记录（含对应视频条目）', onClick: clearCompleted },
+    { key: 'completed-full', icon: <ScissorOutlined />, label: '仅清除已完成记录（保留失败可重试，含对应视频条目）', onClick: clearCompletedFull },
     { key: 'failed', icon: <CloseCircleOutlined />, label: '清除失败', onClick: clearFailed },
     { key: 'orphaned', icon: <ClearOutlined />, label: '清除已关闭页面', onClick: clearOrphaned },
   ]

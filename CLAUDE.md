@@ -126,7 +126,7 @@ assets/
 
 ```
 [src/utils/injector-script.ts] chrome.scripting.executeScript({ world: 'MAIN' })
-  (Hook XHR/Fetch/Blob, 内联 m3u8/DASH 解析, DOM/iframe/JS 变量扫描, 标题检测, 音频格式检测)
+  (Hook XHR/Fetch/Blob, 内联 m3u8/DASH 解析, HLS 分片抑制(播放列表分片不作为独立视频上报), DOM/iframe/JS 变量扫描, 标题检测, 音频格式检测)
        ↓ window.postMessage (VIDEO_DOWNLOADER_DETECT / PAGE_FETCH_* / PAGE_DOWNLOAD_DONE)
 [src/contents/detector.ts] Plasmo CS (ISOLATED world, all_frames)
   (黑名单过滤、去重、元数据更新、转发下载进度/错误、处理 DETECT_NOW 重扫描)
@@ -175,7 +175,8 @@ assets/
 
 | 类型 | 方向 | 用途 |
 |------|------|------|
-| VIDEO_DETECTED | content→bg→ui | 报告检测到的视频/音频 |
+| VIDEO_DETECTED | content→bg→ui | 报告检测到的视频/音频（bg 按 id 并集合并——同页多 iframe/SPA 场景各 detector 只持子集，覆写会互相抹除） |
+| SUPPRESS_FRAGMENTS | content→bg→ui | m3u8 解析确认的分片 URL 显式删除（召回旧分片条目；VIDEO_DETECTED 是合并语义，删除不能靠覆写） |
 | VIDEO_CLEARED | content→bg | 页面视频已清除 |
 | CLEAR_ALL_VIDEOS | ui→bg | 清除所有检测到的视频 |
 | GET_VIDEOS | ui→bg | 获取视频列表 |
@@ -188,13 +189,14 @@ assets/
 | DOWNLOAD_PROGRESS | bg→ui | 下载进度更新 |
 | DOWNLOAD_COMPLETE | bg→ui | 下载完成通知 |
 | DOWNLOAD_FAILED | bg→ui | 下载失败通知 |
-| CLEAR_COMPLETED_DOWNLOADS | ui→bg | 清除已完成下载 |
-| CLEAR_COMPLETED_FULL_DOWNLOADS | ui→bg | 清除已完成下载 (含文件) |
+| CLEAR_COMPLETED_DOWNLOADS | ui→bg | 清除已完成+已失败记录，并把已完成视频从检测列表组级移除（含未下载的兄弟版本；不动磁盘文件） |
+| CLEAR_COMPLETED_FULL_DOWNLOADS | ui→bg | 仅清除已完成记录（保留失败供重试），同样组级移除已完成视频条目 |
 | CLEAR_FAILED_DOWNLOADS | ui→bg | 清除失败下载 |
 | CLEAR_ORPHANED_DOWNLOADS | ui→bg | 清除孤立下载 (页面已关闭) |
 | CLEAR_PAGE_DOWNLOADS | ui→bg | 清除指定页面的下载 |
 | SAVE_HELPER_DONE | save-helper→bg | 保存完成，关闭辅助页 |
 | SAVE_HELPER_PROGRESS | save-helper→bg | save-helper fetch 下载进度 |
+| SAVE_VIA_CHROME_DOWNLOADS | save-helper→bg | SW 代执行 chrome.downloads 并注册文件名安全网（防 filename 被干扰丢弃→blob UUID 命名） |
 | SAVE_HELPER_FETCH_DOWNLOAD | bg→save-helper | save-helper fetch 下载任务 |
 | PAGE_FETCH_PROGRESS | page→bg | 页面 MAIN world fetch 下载进度 |
 | PAGE_FETCH_ERROR | page→bg | 页面 fetch 诊断错误 |
@@ -219,6 +221,7 @@ assets/
 |------|------|
 | `chrome.storage.local` (app-settings) | 用户设置 |
 | `chrome.storage.local` (detected-videos-{pageUrl}) | 检测到的视频缓存 |
+| `chrome.storage.local` (downloaded-registry) | 持久化已下载清单（批量去重记忆，上限 2000 条，清除下载记录不清此清单；见 `downloads/downloaded-registry.ts`） |
 | `chrome.storage.local` (download-tasks) | 下载任务持久化 |
 | IndexedDB `video-downloader` (handles) | File System Access 目录句柄 |
 | IndexedDB `vd-pending-saves` (pending-saves) | HLS 下载临时数据 (保存后自动清理) |
@@ -232,6 +235,7 @@ assets/
 - 格式检测: 首字节 0x47=TS, ftyp/moof=fMP4
 - TS 分片: 通过 mux.js `Transmuxer` 转为 fMP4 (ftyp+moov+moof+mdat)
 - fMP4 分片: 下载 #EXT-X-MAP init segment 拼接到媒体分片前
+- 元数据修补: 封装后按 #EXTINF 总时长原位改写 mvhd/mehd/tkhd 时长与创建时间（init segment 的占位值会导致播放器/资源管理器显示 0/垃圾时长与 1904 年日期，见 `patchMp4Metadata`）
 - 输出: 统一为 .mp4 格式
 
 ## 常规视频下载细节
@@ -260,7 +264,7 @@ host_permissions: `<all_urls>`
 - `injector-script.ts` 中报告视频使用 `window.postMessage` (不能直接使用 `chrome.runtime`)
 - IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在——TS 侧统一走 `src/utils/idb.ts`（含此陷阱与升版本补建逻辑），不要再手写 open/upgrade 样板
 - `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch（`utils/idb.ts` 已统一处理）
-- 目录句柄 (File System Access API) 在浏览器重启后权限可能失效，需重新验证
+- 目录句柄 (File System Access API) 在浏览器/扩展重启后权限会回退；SW 无 user activation 不能 requestPermission——下载前 `queryPermission` 预检，未授权时由 save-helper 页面引导一键重新授权（自动打开的页面同样无手势，不能静默请求）
 - `startChromeNativeDownload` 必须提取为独立函数，避免 ESBuild minifier 去掉分号导致 ASI (Automatic Semicolon Insertion) 问题
 - Tab 导航 (`tabs.onUpdated` loading + complete) 时自动重新注入 MAIN world 脚本
 - 音频格式 (mp3/m4a/aac/flac/ogg/wav/wma/opus) 同样被检测和支持下载
@@ -268,7 +272,7 @@ host_permissions: `<all_urls>`
 ## UI 入口
 
 - **Popup**: 点击扩展图标弹出 (宽度可配 320/400/500)，含视频列表 + 下载状态面板切换
-- **SidePanel**: Popup 中按钮或 action.onClicked 打开
+- **SidePanel**: Popup 中按钮或 action.onClicked 打开；过滤面板含「指定分辨率」筛选（动态档位，与最低分辨率可叠加）；批量下载（全部/选中）按组去重——组内任一版本已有非 failed 任务即跳过整组（版本切换需手动单点），指定档时每组只下一个版本并逐级降档（只向低档回退，见 `src/utils/resolution.ts`）
 - **Options**: 扩展右键菜单"选项"或 Popup 设置按钮，含下载历史表格
 - **Preview**: 新标签页中嵌入视频播放器 (FullPlayer 组件)
 

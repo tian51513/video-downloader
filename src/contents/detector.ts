@@ -122,6 +122,28 @@ window.addEventListener('message', (event) => {
     return
   }
 
+  // 召回分片条目：m3u8 解析时确认这些 URL 是 HLS 流的分片而非独立视频。
+  // 清本地缓存并转发显式删除给 background（VIDEO_DETECTED 是并集合并，
+  // 删除必须走 SUPPRESS_FRAGMENTS，storage 与内存同步清理）
+  if (event.data?.type === 'VIDEO_DOWNLOADER_SUPPRESS') {
+    const urls: string[] = event.data.payload?.urls || []
+    if (urls.length === 0) return
+    let removed = false
+    for (const [id, video] of detectedVideos) {
+      if (video && urls.includes(video.url)) {
+        detectedVideos.delete(id)
+        removed = true
+      }
+    }
+    if (removed && isExtensionContextValid()) {
+      chrome.runtime.sendMessage({
+        type: 'SUPPRESS_FRAGMENTS',
+        payload: { pageUrl: window.location.href, urls },
+      }).catch(() => {})
+    }
+    return
+  }
+
   if (event.data?.type !== 'VIDEO_DOWNLOADER_DETECT') return
 
   const video = event.data.payload

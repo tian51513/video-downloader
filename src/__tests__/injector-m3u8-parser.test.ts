@@ -6,6 +6,7 @@ import {
   parseM3u8Master,
   parseM3u8MediaDuration,
   estimateFileSize,
+  collectSegmentUrls,
   type M3u8Variant,
 } from '../shared/hls-sniff'
 
@@ -155,6 +156,51 @@ seg0.ts
 
     it('0 duration 返回 0', () => {
       expect(estimateFileSize(1_000_000, 0)).toBe(0)
+    })
+  })
+
+  describe('collectSegmentUrls（HLS 分片抑制登记）', () => {
+    // 复现 acgxmh.com 场景：hls.js 逐分片加载 seg_*.ts 被网络钩子
+    // 逐个上报成独立 ts 视频，版本面板被分块文件淹没——m3u8 解析时
+    // 登记分片 URL，后续命中即抑制上报
+    const PLAYLIST = `#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:10
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXTINF:7.533333,
+seg_00000.ts
+#EXTINF:8.333333,
+seg_00001.ts
+#EXT-X-ENDLIST
+`
+
+    it('相对分片名解析为绝对 URL（基准带查询参数时查询不传染）', () => {
+      const base = 'https://m.acgnfl.com/26/08/c53/853234/fhd/index.m3u8?m=abc&t=123&from=%2F26%2Fmaster.m3u8'
+      const urls = collectSegmentUrls(PLAYLIST, base)
+      expect(urls).toEqual([
+        'https://m.acgnfl.com/26/08/c53/853234/fhd/seg_00000.ts',
+        'https://m.acgnfl.com/26/08/c53/853234/fhd/seg_00001.ts',
+      ])
+    })
+
+    it('绝对分片 URL 原样收集', () => {
+      const urls = collectSegmentUrls(
+        '#EXTM3U\n#EXTINF:6,\nhttps://cdn.test/abs/seg1.ts\n',
+        'https://other.test/playlist.m3u8'
+      )
+      expect(urls).toEqual(['https://cdn.test/abs/seg1.ts'])
+    })
+
+    it('#EXT-X-MAP 的 init segment 一并登记（同为流组成部分）', () => {
+      const urls = collectSegmentUrls(
+        '#EXTM3U\n#EXT-X-MAP:URI="init-v1.mp4"\n#EXTINF:6,\nseg1.m4s\n',
+        'https://cdn.test/hls/index.m3u8'
+      )
+      expect(urls).toEqual(['https://cdn.test/hls/init-v1.mp4', 'https://cdn.test/hls/seg1.m4s'])
+    })
+
+    it('空行与纯标签行不产出', () => {
+      expect(collectSegmentUrls('#EXTM3U\n\n#EXT-X-ENDLIST\n', 'https://cdn.test/i.m3u8')).toEqual([])
     })
   })
 })

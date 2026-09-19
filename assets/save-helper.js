@@ -139,14 +139,37 @@
     return data.buffer
   }
 
-  // 自动保存：使用 chrome.downloads.download() API
-  // save-helper 是完整扩展页面，有 downloads 权限，不受后台标签页限制
-  // 降级：如果 chrome.downloads 不可用，回退到 <a download>
-  function downloadViaAnchor(data, filename, mimeType, taskId) {
+  // 自动保存：优先经 SW 代下载（SW 会注册 onDeterminingFilename 安全网
+  // 强制文件名——页面侧 filename 参数可能被其它下载管理扩展/无手势
+  // <a download> 降级干扰丢弃，导致文件以 blob UUID 命名），
+  // 失败再降级页面侧 chrome.downloads → <a download>
+  async function downloadViaAnchor(data, filename, mimeType, taskId) {
     var file = new File([data], filename, { type: mimeType })
     var blobUrl = URL.createObjectURL(file)
 
-    // 优先使用 chrome.downloads API（可靠，不受后台标签页限制）
+    // 1) SW 代下载 + 文件名安全网
+    try {
+      var bgResp = await chrome.runtime.sendMessage({
+        type: 'SAVE_VIA_CHROME_DOWNLOADS',
+        payload: { blobUrl: blobUrl, filename: filename, taskId: taskId }
+      })
+      if (bgResp && bgResp.success) {
+        console.log('[SaveHelper] SW 代下载成功 ID:', bgResp.downloadId, 'filename:', filename)
+        setTimeout(function () { URL.revokeObjectURL(blobUrl) }, 60000)
+        if (taskId) {
+          chrome.runtime.sendMessage({
+            type: 'SAVE_HELPER_DONE',
+            payload: { success: true, size: data.byteLength, taskId: taskId, chromeDownloadId: bgResp.downloadId }
+          }).catch(function () {})
+        }
+        return
+      }
+      console.warn('[SaveHelper] SW 代下载失败:', bgResp && bgResp.error)
+    } catch (bgErr) {
+      console.warn('[SaveHelper] SW 代下载不可用:', bgErr.message)
+    }
+
+    // 2) 页面侧 chrome.downloads（降级，可靠，不受后台标签页限制）
     if (chrome.downloads && chrome.downloads.download) {
       try {
         chrome.downloads.download(
@@ -242,6 +265,58 @@
     }
     statusEl.textContent = '已保存: ' + handle.name
     setTimeout(function () { window.close() }, 1000)
+  }
+
+  // 目录句柄直写（授权后的保存路径，供自动保存与重新授权按钮共用）
+  async function writeViaDirHandle(dirHandle, data, filename, taskId) {
+    var fileHandle = await dirHandle.getFileHandle(filename, { create: true })
+    var writable = await fileHandle.createWritable()
+    await writable.write(data)
+    await writable.close()
+    console.log('[SaveHelper] 文件已保存到:', dirHandle.name + '/' + filename)
+    statusEl.textContent = '已保存: ' + filename
+    if (taskId) {
+      chrome.runtime.sendMessage({
+        type: 'SAVE_HELPER_DONE',
+        payload: { success: true, size: data.byteLength, taskId: taskId }
+      }).catch(function () {})
+    }
+    setTimeout(function () { window.close() }, 1000)
+  }
+
+  // 句柄存在但权限回退（浏览器/扩展重启后）：自动打开的标签页没有
+  // user activation，无法静默 requestPermission——引导用户点一次按钮
+  // 重新授权后直写配置目录（拒绝则降级浏览器下载，文件名仍正确）
+  function showReauthButton(data, filename, mimeType, taskId, dirHandle) {
+    var sizeStr = (data.byteLength / 1024 / 1024).toFixed(1)
+    statusEl.textContent = '数据已就绪 (' + sizeStr + ' MB)——目录授权已过期'
+
+    var container = document.querySelector('.container')
+    var btn = document.createElement('button')
+    btn.textContent = '保存到 ' + dirHandle.name + '（重新授权）'
+    btn.id = 'reauth-btn'
+    btn.style.cssText = 'margin-top: 16px; padding: 10px 20px; font-size: 14px; cursor: pointer; background: #1677ff; color: white; border: none; border-radius: 6px;'
+    btn.addEventListener('click', async function () {
+      btn.disabled = true
+      btn.textContent = '授权中...'
+      btn.style.opacity = '0.6'
+      btn.style.cursor = 'not-allowed'
+      try {
+        var perm = await dirHandle.requestPermission({ mode: 'readwrite' })
+        if (perm === 'granted') {
+          btn.textContent = '保存中...'
+          await writeViaDirHandle(dirHandle, data, filename, taskId)
+        } else {
+          // 拒绝授权：降级浏览器默认下载（SW 安全网保证文件名正确）
+          statusEl.textContent = '未授权目录，已改用浏览器下载'
+          downloadViaAnchor(data, filename, mimeType, taskId)
+          setTimeout(function () { window.close() }, 5000)
+        }
+      } catch (err) {
+        fail(err, taskId)
+      }
+    })
+    container.appendChild(btn)
   }
 
   // 另存为模式：显示保存按钮，用户点击后触发 showSaveFilePicker
@@ -344,30 +419,24 @@
       // save-helper 是可见页面，可以 requestPermission
       var dirHandle = await getDownloadDirHandle()
       if (dirHandle) {
+        var perm = 'denied'
         try {
-          var perm = await dirHandle.queryPermission({ mode: 'readwrite' })
-          if (perm !== 'granted') {
-            perm = await dirHandle.requestPermission({ mode: 'readwrite' })
-          }
-          if (perm === 'granted') {
+          perm = await dirHandle.queryPermission({ mode: 'readwrite' })
+        } catch (permErr) { /* 视为未授权 */ }
+        if (perm === 'granted') {
+          try {
             console.log('[SaveHelper] 使用目录句柄直接写入:', dirHandle.name)
-            var fileHandle = await dirHandle.getFileHandle(filename, { create: true })
-            var writable = await fileHandle.createWritable()
-            await writable.write(data)
-            await writable.close()
-            console.log('[SaveHelper] 文件已保存到:', dirHandle.name + '/' + filename)
-            statusEl.textContent = '已保存: ' + filename
-            if (taskId) {
-              chrome.runtime.sendMessage({
-                type: 'SAVE_HELPER_DONE',
-                payload: { success: true, size: data.byteLength, taskId: taskId }
-              }).catch(function () {})
-            }
-            setTimeout(function () { window.close() }, 1000)
+            await writeViaDirHandle(dirHandle, data, filename, taskId)
             return
+          } catch (dirErr) {
+            console.warn('[SaveHelper] 目录句柄写入失败:', dirErr.message)
           }
-        } catch (dirErr) {
-          console.warn('[SaveHelper] 目录句柄写入失败:', dirErr.message)
+        } else {
+          // 权限回退（浏览器/扩展重启后）：静默 requestPermission 需 user
+          // activation，自动打开的页面没有——引导一键重新授权，不再静默
+          // 降级到系统下载目录
+          showReauthButton(data, filename, mimeType, taskId, dirHandle)
+          return
         }
       }
 

@@ -18,7 +18,7 @@ import type { DetectedVideo, DownloaderType, DownloadTask, ExtensionMessage } fr
 export function useExtensionBridge() {
   const { settings, loadSettings } = useSettingsStore()
   const { tasks, addTask, clearOrphanedTasks, clearPageTasks } = useDownloadStore()
-  const { setVideos, clearVideos, clearOrphanedVideos, clearVideosByUrls } = useVideoStore()
+  const { setVideos, clearVideos, clearOrphanedVideos } = useVideoStore()
   const [currentTab, setCurrentTab] = useState('')
 
   useEffect(() => {
@@ -104,24 +104,29 @@ export function useExtensionBridge() {
     })
   }, [currentTab, clearPageTasks])
 
+  // 清除已完成后从 background 重拉视频列表——background 会把已完成视频
+  // 从检测列表组级移除（含未下载的兄弟版本），本地按 URL 逐条删会漏版本
+  const refreshVideosAfterClear = useCallback(() => {
+    chrome.runtime.sendMessage({ type: 'GET_VIDEOS' }, (response) => {
+      if (response?.videos) setVideos(response.videos)
+    })
+  }, [setVideos])
+
   const clearCompleted = useCallback(() => {
     useDownloadStore.getState().clearCompleted()
-    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_DOWNLOADS' }).catch(() => {})
+    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_DOWNLOADS' }, () => {
+      refreshVideosAfterClear()
+    })
     message.success('已清除完成记录')
-  }, [])
+  }, [refreshVideosAfterClear])
 
   const clearCompletedFull = useCallback(() => {
-    const urlsToRemove = useDownloadStore
-      .getState()
-      .tasks.filter((t) => t.status === 'completed')
-      .map((t) => t.video.url)
-
     useDownloadStore.getState().clearCompletedFull()
-    clearVideosByUrls(urlsToRemove)
-    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_FULL_DOWNLOADS' }).catch(() => {})
-    chrome.runtime.sendMessage({ type: 'CLEAR_VIDEOS_BY_URLS', payload: { urls: urlsToRemove } }).catch(() => {})
-    message.success('已清除完成记录（含同名版本）')
-  }, [clearVideosByUrls])
+    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_FULL_DOWNLOADS' }, () => {
+      refreshVideosAfterClear()
+    })
+    message.success('已清除完成记录')
+  }, [refreshVideosAfterClear])
 
   const clearFailed = useCallback(() => {
     useDownloadStore.getState().clearFailed()

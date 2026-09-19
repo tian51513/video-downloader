@@ -344,7 +344,7 @@ export const DownloadHistory: React.FC = () => {
                 okText="确定"
                 cancelText="取消"
               >
-                <Button size="small" icon={<ClearOutlined />}>清除已完成</Button>
+                <Button size="small" icon={<ClearOutlined />}>清除已完成和失败记录</Button>
               </Popconfirm>
             )}
             <Popconfirm

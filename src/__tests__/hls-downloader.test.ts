@@ -33,10 +33,17 @@ vi.mock('../utils/storage', () => ({
   getDownloads: vi.fn(() => Promise.resolve([])),
 }))
 
-// fetch 路由：按 URL 返回预置内容
+// fetch 路由：按 URL 返回预置内容；failFirst 控制指定 URL 先抛几次 TypeError
+// （模拟瞬时网络失败 "Failed to fetch"）
 const files = vi.hoisted(() => ({ map: new Map<string, Uint8Array | string>() }))
+const failFirst = vi.hoisted(() => ({ map: new Map<string, number>() }))
 const fetchMock = vi.fn(async (input: any, _init?: any) => {
   const url = typeof input === 'string' ? input : input.url
+  const fails = failFirst.map.get(url) || 0
+  if (fails > 0) {
+    failFirst.map.set(url, fails - 1)
+    throw new TypeError('Failed to fetch')
+  }
   const body = files.map.get(url)
   if (body === undefined) {
     return {
@@ -60,7 +67,7 @@ const fetchMock = vi.fn(async (input: any, _init?: any) => {
 })
 vi.stubGlobal('fetch', fetchMock)
 
-const { downloadHls } = await import('../background/hls-downloader')
+const { downloadHls, patchMp4Metadata } = await import('../background/hls-downloader')
 
 // ===== 构造 fMP4 结构 =====
 
@@ -134,6 +141,7 @@ function fakeDirHandle() {
     written,
     handle: {
       name: 'Downloads',
+      queryPermission: async () => 'granted',
       getFileHandle: async (name: string) => ({
         createWritable: async () => {
           let sink: Uint8Array | null = null
@@ -160,6 +168,7 @@ function setupBasicFmp4() {
 
 beforeEach(() => {
   files.map.clear()
+  failFirst.map.clear()
   tabsCreated.length = 0
   dirState.handle = null
   vi.clearAllMocks()
@@ -309,5 +318,167 @@ hi.m3u8
     // 相对 URL 不能原样进入 fetch
     expect(fetched).not.toContain('480p/index.m3u8?n=abc123')
     expect(dir.written[0].data).toEqual(concat(INIT, seg(1), seg(2)))
+  })
+
+  it('相对 URL：替换末段候选 404 → 追加候选命中（/video/<id>/ 形态站点）', async () => {
+    // 复现 huangguo.video sbezh91s 失败单：srcdoc/blob iframe 中检测层无法解析
+    // 相对地址（new URL 对此类基准抛异常），SW 兜底按"替换末段"解析出
+    // /video/720p/...（不存在），真实基准是 /video/<id>/（追加语义）
+    const pageUrl = 'https://huangguo.video/video/sbezh91s'
+    const appendBase = `${pageUrl}/720p`
+    files.map.set(`${appendBase}/index.m3u8?n=tok`, MEDIA_PLAYLIST('init.mp4'))
+    files.map.set(`${appendBase}/init.mp4`, INIT)
+    files.map.set(`${appendBase}/seg1.m4s`, seg(1))
+    files.map.set(`${appendBase}/seg2.m4s`, seg(2))
+
+    const dir = fakeDirHandle()
+    dirState.handle = dir.handle
+
+    const task = makeTask({
+      url: '720p/index.m3u8?n=tok',
+      pageUrl,
+      title: '母子同欢 · 第3集',
+    })
+    const result = await downloadHls(task, new AbortController().signal, 3, vi.fn(), vi.fn())
+
+    // 两个候选都尝试过，追加候选被真正请求
+    const fetched = fetchMock.mock.calls.map((c: any[]) => String(c[0]))
+    expect(fetched).toContain('https://huangguo.video/video/720p/index.m3u8?n=tok')
+    expect(fetched).toContain(`${appendBase}/index.m3u8?n=tok`)
+    // 分片相对追加候选的 m3u8 地址解析
+    expect(fetched).toContain(`${appendBase}/seg1.m4s`)
+    expect(result.savedFileName).toBe('母子同欢 · 第3集.mp4')
+    expect(dir.written[0].data).toEqual(concat(INIT, seg(1), seg(2)))
+  })
+
+  it('m3u8 获取瞬时网络失败 → 按重试次数重试后成功（此前 Step1 无重试直接失败）', async () => {
+    setupBasicFmp4()
+    failFirst.map.set(`${BASE}/media.m3u8`, 2) // retryCount=2 → 第 3 次成功
+
+    const dir = fakeDirHandle()
+    dirState.handle = dir.handle
+
+    const result = await downloadHls(makeTask(), new AbortController().signal, 3, vi.fn(), vi.fn())
+
+    expect(result.savedFileName).toBe('测试 HLS 视频.mp4')
+    expect(dir.written[0].data).toEqual(concat(INIT, seg(1), seg(2)))
+  })
+
+  it('m3u8 全部候选获取失败 → 错误信息带阶段与候选地址（告别裸 Failed to fetch）', async () => {
+    const pageUrl = 'https://huangguo.video/video/sbezh91s'
+    const task = makeTask({ url: '720p/index.m3u8?n=tok', pageUrl })
+
+    await expect(
+      downloadHls(task, new AbortController().signal, 3, vi.fn(), vi.fn())
+    ).rejects.toThrow(/m3u8 获取失败/)
+
+    // 替换末段与追加两个候选都被尝试
+    const fetched = fetchMock.mock.calls.map((c: any[]) => String(c[0]))
+    expect(fetched).toContain('https://huangguo.video/video/720p/index.m3u8?n=tok')
+    expect(fetched).toContain(`${pageUrl}/720p/index.m3u8?n=tok`)
+  })
+
+  it('网络级失败(TypeError) → 错误信息附带请求地址', async () => {
+    failFirst.map.set(`${BASE}/media.m3u8`, 99) // 永远失败，重试用尽
+
+    await expect(
+      downloadHls(makeTask(), new AbortController().signal, 3, vi.fn(), vi.fn())
+    ).rejects.toThrow(/media\.m3u8/)
+  })
+
+  it('init segment 元数据为垃圾值（0 日期/13 小时时长）→ 落盘前被修补为真实时长', async () => {
+    // 复现"保存后显示 1904 年 + 13 小时"缺陷：CDN 的 init segment 里
+    // mvhd/mehd 时长是垃圾值、创建时间为 0（Mac 纪元 1904-01-01）
+    const GARBAGE_DURATION = 4212000000 // ≈ 13h @ timescale 90000
+    files.map.set(`${BASE}/media.m3u8`, MEDIA_PLAYLIST('init-meta.mp4'))
+    files.map.set(`${BASE}/init-meta.mp4`, metaInit(GARBAGE_DURATION))
+    files.map.set(`${BASE}/seg1.m4s`, seg(1))
+    files.map.set(`${BASE}/seg2.m4s`, seg(2))
+
+    const dir = fakeDirHandle()
+    dirState.handle = dir.handle
+
+    const result = await downloadHls(makeTask(), new AbortController().signal, 3, vi.fn(), vi.fn())
+    expect(result.savedFileName).toBeTruthy()
+
+    // 写入数据中 mvhd/mehd/tkhd 时长 = 2×6.0s × timescale，创建时间非 0
+    const data = dir.written[0].data
+    expect(u32At(data, findBox(data, 'mvhd') + 16)).toBe(12 * 90000)
+    expect(u32At(data, findBox(data, 'mehd') + 4)).toBe(12 * 90000)
+    expect(u32At(data, findBox(data, 'tkhd') + 20)).toBe(12 * 90000)
+    // mdhd 用轨道自身 timescale（44100）换算——夸克等播放器优先读它
+    expect(u32At(data, findBox(data, 'mdhd') + 16)).toBe(12 * 44100)
+    expect(u32At(data, findBox(data, 'mvhd') + 4)).toBeGreaterThan(0)
+  })
+})
+
+// ===== MP4 元数据修补 =====
+
+/** 构造带垃圾元数据的 init segment：ftyp + moov[mvhd + trak/tkhd + mdia/mdhd + mvex/mehd] */
+function metaInit(duration: number, timescale = 90000, mediaTimescale = 44100): Uint8Array {
+  const fullBox = (version: number, fields: number[]): Uint8Array => {
+    const payload = new Uint8Array(4 + fields.length * 4)
+    const dv = new DataView(payload.buffer)
+    dv.setUint8(0, version)
+    fields.forEach((f, i) => dv.setUint32(4 + i * 4, f))
+    return payload
+  }
+  // mvhd v0: creation(0)@4 modification(0)@8 timescale@12 duration@16
+  const mvhd = box('mvhd', fullBox(0, [0, 0, timescale, duration, 0, 0]))
+  // tkhd v0: creation@4 modification@8 track_id@12 reserved@16 duration@20
+  const tkhd = box('tkhd', fullBox(0, [0, 0, 1, 0, duration]))
+  // mdhd v0: creation@4 modification@8 timescale@12 duration@16（轨道自有 timescale）
+  const mdhd = box('mdhd', fullBox(0, [0, 0, mediaTimescale, duration]))
+  // mehd v0: fragment_duration@4
+  const mehd = box('mehd', fullBox(0, [duration]))
+  return concat(
+    box('ftyp'),
+    box('moov', concat(mvhd, box('trak', concat(tkhd, box('mdia', mdhd))), box('mvex', mehd)))
+  )
+}
+
+/** 在字节数组中定位 box 类型的内容偏移（'mvhd' 四字节标记 + 4 = 内容起点） */
+function findBox(data: Uint8Array, type: string): number {
+  const target = new TextEncoder().encode(type)
+  outer: for (let i = 0; i + 4 <= data.length; i++) {
+    for (let j = 0; j < 4; j++) {
+      if (data[i + j] !== target[j]) continue outer
+    }
+    return i + 4
+  }
+  throw new Error('box not found: ' + type)
+}
+
+function u32At(data: Uint8Array, offset: number): number {
+  return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(offset)
+}
+
+describe('patchMp4Metadata（纯函数）', () => {
+  it('垃圾时长/零日期 → 按 #EXTINF 总时长与当前时间改写 mvhd/mehd/tkhd/mdhd', () => {
+    const buf = metaInit(4212000000).slice().buffer
+    const patched = patchMp4Metadata(buf, 46.5)
+    const u8 = new Uint8Array(patched)
+    expect(u32At(u8, findBox(u8, 'mvhd') + 16)).toBe(Math.round(46.5 * 90000))
+    expect(u32At(u8, findBox(u8, 'mehd') + 4)).toBe(Math.round(46.5 * 90000))
+    expect(u32At(u8, findBox(u8, 'tkhd') + 20)).toBe(Math.round(46.5 * 90000))
+    expect(u32At(u8, findBox(u8, 'mdhd') + 16)).toBe(Math.round(46.5 * 44100))
+    // 创建时间 = 当前时间的 Mac 纪元表示（留 60s 余量）
+    expect(u32At(u8, findBox(u8, 'mvhd') + 4)).toBeGreaterThan(
+      Math.floor(Date.now() / 1000) + 2082844800 - 60
+    )
+  })
+
+  it('无 moov/mvhd（如 mux.js 产物结构差异）→ 原样返回不抛错', () => {
+    const original = concat(INIT, seg(1))
+    const buf = original.slice().buffer
+    const patched = new Uint8Array(patchMp4Metadata(buf, 12))
+    expect(patched).toEqual(original)
+  })
+
+  it('总时长非正 → 不改写', () => {
+    const original = metaInit(123)
+    const buf = original.slice().buffer
+    const patched = new Uint8Array(patchMp4Metadata(buf, 0))
+    expect(patched).toEqual(original)
   })
 })

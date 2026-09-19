@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { isAudioFormat } from '../shared/formats'
+import { resolutionTier } from '../utils/resolution'
 import type { DetectedVideo, VideoFilter, VideoGroup } from '../types'
 
 function sanitizeTitle(title: string): string {
@@ -38,6 +39,7 @@ export const useVideoStore = create<VideoState>((set, get) => ({
   currentFilter: {
     formats: ['mp4', 'mkv', 'webm', 'flv', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav'],
     minResolution: 'any',
+    exactResolution: 'any',
     minSize: 'any',
     minDuration: 'any',
     sources: [],
@@ -185,6 +187,11 @@ export const useVideoStore = create<VideoState>((set, get) => ({
     if (currentFilter.minResolution !== 'any' && resolutionThresholds[currentFilter.minResolution]) {
       const threshold = resolutionThresholds[currentFilter.minResolution]
       result = result.filter((v) => v.height && v.height >= threshold)
+    }
+
+    // 指定分辨率：精确档位匹配（无高度信息的视频在指定档时隐藏）
+    if (currentFilter.exactResolution && currentFilter.exactResolution !== 'any') {
+      result = result.filter((v) => resolutionTier(v.height) === currentFilter.exactResolution)
     }
 
     const sizeThresholds: Record<string, number> = {
