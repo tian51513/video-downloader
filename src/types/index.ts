@@ -260,62 +260,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
 }
 
-// ===== 视频格式映射 =====
+// ===== 格式常量已移至 src/shared/formats.ts（与 injector-script 共享单一来源）=====
 
-export const VIDEO_EXTENSIONS: Record<string, VideoFormat> = {
-  '.mp4': 'mp4',
-  '.mkv': 'mkv',
-  '.flv': 'flv',
-  '.avi': 'avi',
-  '.rmvb': 'rmvb',
-  '.rm': 'rm',
-  '.webm': 'webm',
-  '.mov': 'mov',
-  '.ts': 'ts',
-}
-
-export const HLS_CONTENT_TYPES = [
-  'application/vnd.apple.mpegurl',
-  'application/x-mpegurl',
-]
-
-export const DASH_CONTENT_TYPES = [
-  'application/dash+xml',
-  'application/xml',
-]
-
-// ===== 音频格式映射 =====
-
-export const AUDIO_EXTENSIONS: Record<string, AudioFormat> = {
-  '.mp3': 'mp3',
-  '.m4a': 'm4a',
-  '.aac': 'aac',
-  '.flac': 'flac',
-  '.ogg': 'ogg',
-  '.oga': 'ogg',
-  '.wav': 'wav',
-  '.wma': 'wma',
-  '.opus': 'opus',
-}
-
-export const AUDIO_CONTENT_TYPES: Record<string, AudioFormat> = {
-  'audio/mpeg': 'mp3',
-  'audio/mp3': 'mp3',
-  'audio/x-mpeg': 'mp3',
-  'audio/mp4': 'm4a',
-  'audio/x-m4a': 'm4a',
-  'audio/aac': 'aac',
-  'audio/flac': 'flac',
-  'audio/ogg': 'ogg',
-  'audio/wav': 'wav',
-  'audio/x-wav': 'wav',
-  'audio/wave': 'wav',
-  'audio/x-ms-wma': 'wma',
-  'audio/wma': 'wma',
-  'audio/opus': 'opus',
-  'audio/webm': 'opus',
-}
-
-export function isAudioFormat(format: MediaFormat): format is AudioFormat {
-  return ['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'].includes(format)
-}
+export {
+  VIDEO_EXTENSIONS,
+  HLS_CONTENT_TYPES,
+  DASH_CONTENT_TYPES,
+  AUDIO_EXTENSIONS,
+  AUDIO_CONTENT_TYPES,
+  isAudioFormat,
+} from '../shared/formats'

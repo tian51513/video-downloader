@@ -18,23 +18,19 @@ import {
 } from './download-manager'
 import type { DetectedVideo, ExtensionMessage } from '../types'
 import { saveVideos, getVideos, clearVideos, getAllVideos, clearAllVideos, clearOrphanedVideos, removeVideosByUrls } from '../utils/storage'
-import { injectorMain } from '../utils/injector-script'
 
 const pageVideos = new Map<string, DetectedVideo[]>()
 
-// ===== MAIN world 注入脚本字符串 =====
-// 注入时不能引用外部模块，需要将整个函数体作为字符串传递
-function getInjectorScriptSource(): string {
-  return '(' + injectorMain.toString() + ')()'
-}
-
 // ===== 注入 MAIN world 脚本到指定 tab =====
+// injector.js 由 scripts/postbuild.mjs 用 esbuild 打包（可 import 共享模块），
+// files 注入替代旧的 func 序列化——后者要求被注入函数闭包自包含，
+// 是 injector 与共享代码大面积重复的根因
 async function injectMainWorldScript(tabId: number, allFrames?: boolean): Promise<void> {
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: !!allFrames },
+      files: ['injector.js'],
       world: 'MAIN',
-      func: injectorMain,
     })
   } catch (error: any) {
     // chrome:// pages 等受限页面无法注入，忽略

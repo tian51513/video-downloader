@@ -1,8 +1,21 @@
 /**
- * MAIN world 注入脚本
- * 导出一个自包含函数，供 chrome.scripting.executeScript({ world: 'MAIN' }) 使用。
- * 不能使用任何 import/export，不能依赖外部变量。
+ * MAIN world 注入脚本（入口函数）
+ *
+ * 由 scripts/postbuild.mjs 用 esbuild 打包为 build/<target>/injector.js，
+ * background 通过 chrome.scripting.executeScript({ files: ['injector.js'],
+ * world: 'MAIN' }) 注入。因此**可以** import 共享纯模块（构建期内联）；
+ * 但仍不可依赖 chrome.* API——MAIN world 中不可用，与 ISOLATED world 的
+ * 通信只能走 window.postMessage。
  */
+
+import { HLS_CONTENT_TYPES, isAudioFormat } from '../shared/formats'
+import {
+  isM3u8Master,
+  parseM3u8Master,
+  parseM3u8MediaDuration,
+  estimateFileSize,
+} from '../shared/hls-sniff'
+import { detectFormatFromUrl, isMediaRequest } from '../shared/media-detect'
 
 export function injectorMain(): void {
   'use strict'
@@ -10,87 +23,6 @@ export function injectorMain(): void {
   const WIN = window as any
   if (WIN.__VIDEO_DOWNLOADER_INJECTED__) return
   WIN.__VIDEO_DOWNLOADER_INJECTED__ = true
-
-  // ===== 格式映射 =====
-  const VIDEO_EXTENSIONS: Record<string, string> = {
-    '.mp4': 'mp4', '.mkv': 'mkv', '.flv': 'flv', '.avi': 'avi',
-    '.rmvb': 'rmvb', '.rm': 'rm', '.webm': 'webm', '.mov': 'mov', '.ts': 'ts'
-  }
-  const AUDIO_EXTENSIONS: Record<string, string> = {
-    '.mp3': 'mp3', '.m4a': 'm4a', '.aac': 'aac', '.flac': 'flac',
-    '.ogg': 'ogg', '.oga': 'ogg', '.wav': 'wav', '.wma': 'wma', '.opus': 'opus'
-  }
-  const HLS_CONTENT_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegurl']
-  const DASH_CONTENT_TYPES = ['application/dash+xml', 'application/xml']
-  const AUDIO_CONTENT_TYPES: Record<string, string> = {
-    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/x-mpeg': 'mp3',
-    'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac',
-    'audio/flac': 'flac', 'audio/ogg': 'ogg', 'audio/wav': 'wav',
-    'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/x-ms-wma': 'wma',
-    'audio/wma': 'wma', 'audio/opus': 'opus', 'audio/webm': 'opus',
-  }
-  const AUDIO_FORMATS_SET: Record<string, boolean> = {
-    'mp3': true, 'm4a': true, 'aac': true, 'flac': true,
-    'ogg': true, 'wav': true, 'wma': true, 'opus': true,
-  }
-  function isAudioFormat(format: string): boolean {
-    return !!AUDIO_FORMATS_SET[format]
-  }
-
-  // ===== m3u8 内联解析（MAIN world 不可 import） =====
-
-  function parseAttributes(attrString: string): Record<string, string> {
-    const result: Record<string, string> = {}
-    const regex = /([A-Z0-9_-]+)=(?:"([^"]*)"|([^,]*))/g
-    let match: RegExpExecArray | null
-    while ((match = regex.exec(attrString)) !== null) {
-      result[match[1]] = match[2] !== undefined ? match[2] : match[3]
-    }
-    return result
-  }
-
-  function resolveUrl(relative: string, base: string): string {
-    try { return new URL(relative, base).href } catch { return relative }
-  }
-
-  function isM3u8Master(content: string): boolean {
-    return content.includes('#EXT-X-STREAM-INF')
-  }
-
-  function parseM3u8Master(content: string, baseUrl: string): Array<{ bandwidth: number; width: number; height: number; url: string }> {
-    const lines = content.split(/\r?\n/).map(function (l) { return l.trim() })
-    const variants: Array<{ bandwidth: number; width: number; height: number; url: string }> = []
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      if (!line.startsWith('#EXT-X-STREAM-INF')) continue
-      const attrs = parseAttributes(line.substring(17))
-      const bandwidth = parseInt(attrs['BANDWIDTH'] || '0', 10)
-      let width = 0, height = 0
-      if (attrs['RESOLUTION']) {
-        const parts = attrs['RESOLUTION'].split('x')
-        width = parseInt(parts[0], 10) || 0
-        height = parseInt(parts[1], 10) || 0
-      }
-      const nextLine = lines[i + 1]
-      if (!nextLine || nextLine.startsWith('#')) continue
-      variants.push({ bandwidth: bandwidth, width: width, height: height, url: resolveUrl(nextLine, baseUrl) })
-    }
-    return variants
-  }
-
-  function parseM3u8MediaDuration(content: string): number {
-    const lines = content.split(/\r?\n/)
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('#EXT-X-TARGETDURATION:')) {
-        return parseInt(lines[i].substring(22), 10) || 0
-      }
-    }
-    return 0
-  }
-
-  function estimateFileSize(bitrate: number, durationSeconds: number): number {
-    return Math.round(bitrate * durationSeconds / 8)
-  }
 
   /**
    * 解析 m3u8 内容并报告视频。
@@ -284,40 +216,6 @@ export function injectorMain(): void {
       hash = hash & hash
     }
     return Math.abs(hash).toString(36) + '_' + (_hashCounter++)
-  }
-
-  // ===== 格式检测 =====
-  function detectFormatFromUrl(url: string): string | null {
-    const lower = url.toLowerCase().split('?')[0].split('#')[0].replace(/\/+$/, '')
-    if (lower.includes('.m3u8')) return 'hls'
-    if (lower.includes('.mpd')) return 'dash'
-    for (const ext in VIDEO_EXTENSIONS) {
-      if (lower.endsWith(ext)) return VIDEO_EXTENSIONS[ext]
-    }
-    for (const ext in AUDIO_EXTENSIONS) {
-      if (lower.endsWith(ext)) return AUDIO_EXTENSIONS[ext]
-    }
-    return null
-  }
-
-  function detectFormatFromContentType(contentType: string): string | null {
-    const lower = contentType.toLowerCase()
-    for (let i = 0; i < HLS_CONTENT_TYPES.length; i++) {
-      if (lower.includes(HLS_CONTENT_TYPES[i])) return 'hls'
-    }
-    for (let i = 0; i < DASH_CONTENT_TYPES.length; i++) {
-      if (lower.includes(DASH_CONTENT_TYPES[i])) return 'dash'
-    }
-    // 音频 MIME 类型检测
-    const semicolonIdx = lower.indexOf(';')
-    const mimeBase = semicolonIdx >= 0 ? lower.substring(0, semicolonIdx) : lower
-    if (AUDIO_CONTENT_TYPES[mimeBase]) return AUDIO_CONTENT_TYPES[mimeBase]
-    return null
-  }
-
-  function isMediaRequest(url: string, contentType?: string): boolean {
-    return detectFormatFromUrl(url) !== null ||
-      (contentType ? detectFormatFromContentType(contentType) !== null : false)
   }
 
   // ===== 去重 =====

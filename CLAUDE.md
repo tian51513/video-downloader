@@ -17,13 +17,13 @@ Chrome MV3 扩展，用于检测网页视频/音频并下载。支持 MP4/MKV/We
 
 ```bash
 pnpm dev          # 开发模式 (热重载)
-pnpm build        # 生产构建 (自动复制 assets/*.html, assets/*.js 到 build/)
+pnpm build        # 生产构建 (postbuild.mjs: 复制 assets/*.html/js + esbuild 打包 injector.js)
 pnpm clean        # 清理构建产物
 pnpm test         # 运行测试
 pnpm test:watch   # 测试监视模式
 ```
 
-构建脚本会将 `assets/` 下的静态文件（offscreen.html/js, save-helper.html/js）复制到 `build/chrome-mv3-prod/`。
+构建后处理由 `scripts/postbuild.mjs` 完成：① 将 `assets/` 下的静态文件（offscreen.html/js, save-helper.html/js）复制到 `build/chrome-mv3-prod/`；② 用 esbuild 将 `src/injector-entry.ts` 打包为自包含 IIFE `build/chrome-mv3-prod/injector.js`（MAIN world 注入产物，见"关键注意事项"）。注意 `pnpm dev` 不经过此脚本（已知缺口，dev 下需手动执行一次 `node scripts/postbuild.mjs chrome-mv3-dev`）。
 
 ## 项目架构
 
@@ -31,16 +31,24 @@ pnpm test:watch   # 测试监视模式
 src/
 ├── __tests__/           # Vitest 单元测试
 │   ├── setup.ts
-│   ├── download-strategy.test.ts      # 下载策略测试
-│   ├── download-diagnostic.test.ts    # 下载诊断测试
+│   ├── chrome-mock.ts                # chrome.* 测试 mock 权威工厂
+│   ├── download-strategy.test.ts      # 下载策略分发测试
+│   ├── download-diagnostic.test.ts    # 失败/取消语义测试
 │   ├── download-dedup.test.ts         # 去重测试
 │   ├── download-progress-monotonic.test.ts  # 进度单调性测试
 │   ├── download-layer-fallback.test.ts      # 多层级降级测试
-│   ├── download-filename.test.ts      # 文件名测试
-│   ├── download-rules.test.ts         # 下载规则测试
-│   ├── injector-m3u8-parser.test.ts   # MAIN world m3u8 解析测试
-│   ├── VideoItem-version-panel.test.ts  # VideoItem 版本面板测试
-│   └── SidePanel-download-state.test.ts  # SidePanel 下载状态测试
+│   ├── download-filename.test.ts      # 文件名/标题兜底测试
+│   ├── download-rules.test.ts         # DNR 下载规则测试
+│   ├── idb.test.ts                    # IndexedDB 深模块测试
+│   ├── injector-m3u8-parser.test.ts   # m3u8 嗅探解析测试 (真实 shared 模块)
+│   ├── injector-bundle.test.ts        # injector.js 构建产物冒烟测试
+│   ├── VideoItem-version-panel.test.tsx  # VideoItem 版本面板测试
+│   └── SidePanel-download-state.test.tsx # 下载状态渲染测试
+├── shared/              # 跨上下文共享纯模块 (background 与 injector 打包共用)
+│   ├── formats.ts          # 格式常量单一来源 (types/index.ts re-export)
+│   ├── media-detect.ts     # URL/Content-Type → 格式检测
+│   └── hls-sniff.ts        # m3u8 嗅探级解析 (检测路径; 下载级解析在 background/hls-parser)
+├── injector-entry.ts    # injector.js 打包入口 (esbuild IIFE)
 ├── background/          # Service Worker (扩展核心)
 │   ├── index.ts         # 消息路由、context menu、tab 事件、keepalive alarm、MAIN world 脚本注入
 │   ├── download-manager.ts  # 下载队列、多层级降级下载、并发控制、进度追踪
@@ -79,7 +87,7 @@ src/
 │   ├── download-store.ts # 下载状态 Zustand store
 │   └── settings-store.ts # 设置 Zustand store
 ├── utils/
-│   ├── injector-script.ts  # MAIN world 注入脚本 (用于页面内 fetch 下载降级 + 独立检测 hooks)
+│   ├── injector-script.ts  # MAIN world 检测入口 (Hook XHR/Fetch/Blob, DOM/iframe/JS 变量扫描; 可 import src/shared/)
 │   ├── storage.ts          # chrome.storage 封装
 │   ├── sanitize.ts         # 文件名清理、乱码检测
 │   ├── directory-handle.ts # File System Access API (目录句柄管理, IndexedDB)
@@ -241,7 +249,7 @@ host_permissions: `<all_urls>`
 - Service Worker 无 DOM，Blob URL 不可用；通过 Offscreen Document 或 save-helper 页面创建
 - Service Worker 会被 Chrome 自动终止；使用 `chrome.alarms` (25s 间隔) 保活活跃下载
 - 内容脚本为单路径架构: `src/utils/injector-script.ts` (MAIN world 注入) + `src/contents/detector.ts` (ISOLATED world 中转)。Plasmo 0.90 不收集 `src/content/index.ts` 目录形态的 CS 入口（只认 `src/content.ts` 平铺或 `src/contents/` 目录），不要重建该目录
-- `injector-script.ts` 不能使用 import/export，必须自包含 (供 `chrome.scripting.executeScript` 注入)
+- `injector-script.ts` 由 scripts/postbuild.mjs 用 esbuild 打包后经 `chrome.scripting.executeScript({ files: ['injector.js'], world: 'MAIN' })` 注入——因此**可以** import 共享纯模块（`src/shared/`），但**不能**使用 `chrome.*` API（MAIN world 不可用）
 - `injector-script.ts` 中报告视频使用 `window.postMessage` (不能直接使用 `chrome.runtime`)
 - IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在——TS 侧统一走 `src/utils/idb.ts`（含此陷阱与升版本补建逻辑），不要再手写 open/upgrade 样板
 - `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch（`utils/idb.ts` 已统一处理）

@@ -1,82 +1,21 @@
 import { describe, it, expect } from 'vitest'
+import {
+  parseAttributes,
+  resolveUrl,
+  isM3u8Master,
+  parseM3u8Master,
+  parseM3u8MediaDuration,
+  estimateFileSize,
+  type M3u8Variant,
+} from '../shared/hls-sniff'
 
 /**
- * injector-script.ts 中内联 m3u8 解析函数的测试。
+ * m3u8 嗅探解析器测试（src/shared/hls-sniff.ts —— 真实模块）
  *
- * 由于 injector-script.ts 运行在 MAIN world，无法 import，
- * 这里提取纯函数副本进行单元测试，确保解析逻辑正确。
- *
- * 这些函数是 injector-script.ts 中同名函数的镜像——
- * 修改时必须同步更新。
+ * 历史上这些函数内联在 injector-script.ts 的闭包里无法被 import，
+ * 测试文件靠手工镜像同步（"修改时必须同步更新"）。injector 改为
+ * esbuild 构建期打包后共享逻辑抽出为本模块，测试直接 import。
  */
-
-// ===== 从 injector-script.ts 镜像的纯函数 =====
-
-function parseAttributes(attrString: string): Record<string, string> {
-  const result: Record<string, string> = {}
-  const regex = /([A-Z0-9_-]+)=(?:"([^"]*)"|([^,]*))/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(attrString)) !== null) {
-    result[match[1]] = match[2] !== undefined ? match[2] : match[3]
-  }
-  return result
-}
-
-function resolveUrl(relative: string, base: string): string {
-  try {
-    return new URL(relative, base).href
-  } catch {
-    return relative
-  }
-}
-
-interface M3u8Variant {
-  bandwidth: number
-  width: number
-  height: number
-  url: string
-}
-
-function parseM3u8Master(content: string, baseUrl: string): M3u8Variant[] {
-  const lines = content.split(/\r?\n/).map(l => l.trim())
-  const variants: M3u8Variant[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.startsWith('#EXT-X-STREAM-INF')) continue
-    const attrs = parseAttributes(line.substring(17))
-    const bandwidth = parseInt(attrs['BANDWIDTH'] || '0', 10)
-    let width = 0, height = 0
-    if (attrs['RESOLUTION']) {
-      const parts = attrs['RESOLUTION'].split('x')
-      width = parseInt(parts[0], 10) || 0
-      height = parseInt(parts[1], 10) || 0
-    }
-    const nextLine = lines[i + 1]
-    if (!nextLine || nextLine.startsWith('#')) continue
-    variants.push({ bandwidth, width, height, url: resolveUrl(nextLine, baseUrl) })
-  }
-  return variants
-}
-
-function parseM3u8MediaDuration(content: string): number {
-  const lines = content.split(/\r?\n/)
-  for (const line of lines) {
-    if (line.startsWith('#EXT-X-TARGETDURATION:')) {
-      return parseInt(line.substring(22), 10) || 0
-    }
-  }
-  return 0
-}
-
-function isM3u8Master(content: string): boolean {
-  return content.includes('#EXT-X-STREAM-INF')
-}
-
-function estimateFileSize(bitrate: number, durationSeconds: number): number {
-  return Math.round(bitrate * durationSeconds / 8)
-}
-
-// ===== Tests =====
 
 describe('m3u8 内联解析器', () => {
   describe('parseAttributes', () => {

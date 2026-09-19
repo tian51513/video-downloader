@@ -5,7 +5,7 @@
   "description": "Chrome extension for detecting and downloading web videos",
   "scripts": {
     "dev": "plasmo dev",
-    "build": "plasmo build && node -e \"const fs=require('fs');['assets/offscreen.html','assets/offscreen.js','assets/save-helper.html','assets/save-helper.js'].forEach(f=>{try{fs.copyFileSync(f,'build/chrome-mv3-prod/'+f.split('/').pop())}catch(e){console.error('Copy failed:',f,e.message)}})\"",
+    "build": "plasmo build && node scripts/postbuild.mjs",
     "clean": "rm -rf dist build .plasmo",
     "test": "vitest run --experimental.viteJsx",
     "test:watch": "vitest --experimental.viteJsx"
@@ -26,9 +26,11 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/chrome": "^0.0.280",
+    "@types/node": "^26.6.1",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "esbuild": "^0.28.2",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "plasmo": "^0.90.0",
