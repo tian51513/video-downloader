@@ -57,6 +57,8 @@ export interface DownloadSettings {
   retryDelay: number
   timeout: number
   chunkSize?: number
+  /** 打开浏览器"另存为"对话框（运行时三处使用，此前类型缺失已漂移） */
+  askSaveLocation?: boolean
 }
 
 export interface DownloadTask {
@@ -216,6 +218,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     retryCount: 3,
     retryDelay: 1000,
     timeout: 30000,
+    askSaveLocation: false,
   },
   defaultDownloader: 'chrome',
   baseSaveDirectory: '',

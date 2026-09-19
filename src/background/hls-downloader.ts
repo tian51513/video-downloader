@@ -6,13 +6,13 @@
 import type { DownloadTask, DownloadStatus } from '../types'
 import { getFullSettings } from './settings'
 import { sanitizeName } from '../utils/sanitize'
+import { looksLikeFallback, cleanSiteTitleSuffix, extractNameFromUrl } from './title-utils'
 import { getDirectoryHandle, DOWNLOAD_DIR } from '../utils/directory-handle'
 import {
   parseM3u8,
   selectVariant,
   type HlsMediaPlaylist,
 } from './hls-parser'
-// @ts-expect-error mux.js 没有内置类型声明
 import muxjs from 'mux.js'
 
 const SAVE_DB_NAME = 'vd-pending-saves'
@@ -330,7 +330,7 @@ async function remuxFmp4(
  * 从 fMP4 数据中提取 init segment（ftyp + moov，到第一个 moof 之前）
  */
 function extractInitFromSegment(data: ArrayBuffer): ArrayBuffer {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  const view = new DataView(data)
   let offset = 0
   while (offset + 8 <= data.byteLength) {
     const boxSize = view.getUint32(offset)
@@ -479,7 +479,8 @@ async function decryptSegments(
     if (!segKey) continue
 
     const iv = segKey.iv || new Uint8Array(16)
-    const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, buffers[i])
+    // TS 5.7 对 BufferSource 的 ArrayBuffer 泛型要求更严，显式放宽
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv as BufferSource }, key, buffers[i])
     buffers[i] = decrypted
   }
 }
@@ -492,26 +493,24 @@ async function fetchWithTimeout(
   timeout: number,
   referrer?: string
 ): Promise<Response> {
+  // 用户取消（pause/cancel 的 AbortController）与超时共同作用在同一 fetch 上。
+  // 注意：AbortSignal.timeout() 返回的 signal 没有 .abort() 方法，
+  // 旧实现调用 signal.abort() 会抛 TypeError 且 fetch 不会被用户取消中止。
   const timeoutSignal = AbortSignal.timeout(timeout)
-  const combinedAbort = () => {
-    if (signal.aborted) timeoutSignal.abort()
-  }
-  signal.addEventListener('abort', combinedAbort, { once: true })
+  const combined = typeof AbortSignal.any === 'function'
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal
 
-  try {
-    const fetchOpts: RequestInit = { signal: timeoutSignal, credentials: 'include' }
-    if (referrer) {
-      fetchOpts.referrer = referrer
-      fetchOpts.referrerPolicy = 'unsafe-url'
-    }
-    const response = await fetch(url, fetchOpts)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${url}`)
-    }
-    return response
-  } finally {
-    signal.removeEventListener('abort', combinedAbort)
+  const fetchOpts: RequestInit = { signal: combined, credentials: 'include' }
+  if (referrer) {
+    fetchOpts.referrer = referrer
+    fetchOpts.referrerPolicy = 'unsafe-url'
   }
+  const response = await fetch(url, fetchOpts)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${url}`)
+  }
+  return response
 }
 
 async function fetchWithRetry(
@@ -532,41 +531,6 @@ async function fetchWithRetry(
     }
   }
   throw new Error('下载重试次数已用尽')
-}
-
-function looksLikeFallback(title: string): boolean {
-  if (!title) return true
-  // 自动生成的回退名模式
-  if (/^(hls|video)_\d+$/.test(title)) return true
-  // 纯数字 ID
-  if (/^\d{6,}$/.test(title)) return true
-  // hash 类 ID (如 simpleId 产物)
-  if (/^[a-z0-9]+_\d+$/.test(title)) return true
-  // domain_timestamp 模式
-  if (/^.+_\d{14}$/.test(title)) return true
-  // UUID 格式 (如 xhamster.com 页面初始标题)
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title.trim())) return true
-  return false
-}
-
-/**
- * 清理站点标题后缀（去除 " | site"、" – tags | site" 等）
- */
-function cleanSiteTitleSuffix(title: string): string {
-  // "标题 – tags/categories | site" 模式 (xhamster 等)
-  // 必须同时有 " | " 分隔符才视为站点标题模式
-  const pipeIdx = title.lastIndexOf(' | ')
-  if (pipeIdx > 0) {
-    const before = title.substring(0, pipeIdx).trim()
-    const dashIdx = before.lastIndexOf(' – ')
-    if (dashIdx > 0) {
-      const candidate = before.substring(0, dashIdx).trim()
-      if (candidate.length > 3) return candidate
-    }
-    if (before.length > 3) return before
-  }
-  // 没有 " | " 模式时不动标题（og:title 通常已经是干净的）
-  return title
 }
 
 async function fetchPageTitle(pageUrl: string, signal: AbortSignal): Promise<string> {
@@ -603,23 +567,6 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
-}
-
-function extractNameFromUrl(url: string): string {
-  try {
-    const parsed = new URL(url)
-    const segments = parsed.pathname.split('/').filter((s) => s && s !== '.')
-    if (segments.length > 0) {
-      let last = segments[segments.length - 1].split('?')[0].split('#')[0]
-      last = last.replace(/\.\w+$/, '')
-      try { last = decodeURIComponent(last) } catch { /* ignore */ }
-      last = last.replace(/[-_]+/g, ' ')
-      if (last && last.length > 2 && !/^\d+$/.test(last)) return last
-    }
-    return parsed.hostname.replace('www.', '')
-  } catch {
-    return ''
-  }
 }
 
 function formatBytes(bytes: number): string {

@@ -8,6 +8,7 @@ import {
   updateTaskChromeDownloadId,
   updateTaskProgressFromPage,
   completeDownloadTask,
+  failDownloadTask,
   clearCompletedDownloads,
   clearCompletedFullDownloads,
   clearFailedDownloads,
@@ -352,36 +353,43 @@ async function handleMessage(
 
     // ===== 页面下载进度 =====
     case 'PAGE_FETCH_PROGRESS': {
-      const { taskId, progress, speed, downloadedBytes, totalBytes } = message.payload
-      await updateTaskProgressFromPage(taskId, progress, speed, downloadedBytes, totalBytes)
+      // save-helper/offscreen/页面 上报的进度字段是 {loaded, total}，这里换算成任务字段
+      const { taskId, loaded, total, speed } = message.payload
+      const progress = total > 0 ? (loaded / total) * 100 : undefined
+      await updateTaskProgressFromPage(taskId, progress, speed, loaded, total)
       return { success: true }
     }
 
     case 'PAGE_FETCH_ERROR': {
       console.warn('[VideoDownloader] Page fetch error:', message.payload)
+      const { taskId, error } = message.payload
+      if (taskId) {
+        await failDownloadTask(taskId, error)
+      }
       return { success: true }
     }
 
     case 'PAGE_DOWNLOAD_DONE': {
-      const { taskId } = message.payload
-      // 通知 download-manager 下载完成
-      await cancelDownload(taskId)
+      const { taskId, chromeDownloadId } = message.payload
+      // 页面报告下载完成——标记完成（此前误调 cancelDownload 会把成功任务标成失败）
+      await completeDownloadTask(taskId, chromeDownloadId)
       return { success: true }
     }
 
     case 'SAVE_HELPER_DONE': {
-      const { taskId, success, chromeDownloadId } = message.payload
+      const { taskId, success, chromeDownloadId, error } = message.payload
       if (success !== false) {
         await completeDownloadTask(taskId, chromeDownloadId)
       } else {
-        await cancelDownload(taskId)
+        await failDownloadTask(taskId, error || '保存失败')
       }
       return { success: true }
     }
 
     case 'SAVE_HELPER_PROGRESS': {
-      const { taskId, progress, speed, downloadedBytes, totalBytes } = message.payload
-      await updateTaskProgressFromPage(taskId, progress, speed, downloadedBytes, totalBytes)
+      const { taskId, loaded, total, speed } = message.payload
+      const progress = total > 0 ? (loaded / total) * 100 : undefined
+      await updateTaskProgressFromPage(taskId, progress, speed, loaded, total)
       return { success: true }
     }
 

@@ -81,10 +81,11 @@ export async function getDirectoryInfo(
     const handle = await getDirectoryHandle(key)
     if (!handle) return null
     // 验证句柄仍然有效：请求权限
-    const perm = await handle.queryPermission({ mode: 'readwrite' })
+    // TS lib.dom 尚未收录 FileSystemHandle 的 permission 方法（Chrome 已实现）
+    const perm = await (handle as any).queryPermission({ mode: 'readwrite' })
     if (perm === 'granted') return { name: handle.name, key }
     // 尝试重新请求权限
-    const newPerm = await handle.requestPermission({ mode: 'readwrite' })
+    const newPerm = await (handle as any).requestPermission({ mode: 'readwrite' })
     if (newPerm === 'granted') return { name: handle.name, key }
     return null
   } catch {

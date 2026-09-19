@@ -12,7 +12,7 @@ const { Title, Text } = Typography
 function IndexPopup() {
   const { filteredGroups, isDetecting, setVideos, clearVideos, clearOrphanedVideos, clearVideosByUrls } = useVideoStore()
   const { settings, loadSettings } = useSettingsStore()
-  const { tasks, addTask, clearCompleted, clearCompletedFull, clearFailed, clearOrphanedTasks, clearPageTasks, removeTask } = useDownloadStore()
+  const { tasks, addTask, clearCompleted, clearCompletedFull, clearFailed, clearOrphanedTasks, clearPageTasks } = useDownloadStore()
   const [currentTab, setCurrentTab] = useState('')
 
   useEffect(() => { loadSettings() }, [loadSettings])
@@ -72,9 +72,10 @@ function IndexPopup() {
   }, [])
 
   const handleCancel = useCallback(async (taskId: string) => {
-    chrome.runtime.sendMessage({ type: 'REMOVE_DOWNLOAD', payload: { taskId } }).catch(() => {})
-    removeTask(taskId)
-  }, [removeTask])
+    // 与 sidepanel 统一：取消保留任务记录（标记为已取消，可重试），
+    // 而不是 REMOVE_DOWNLOAD 直接删除任务
+    chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD', payload: { taskId } }).catch(() => {})
+  }, [])
 
   const handleRetry = useCallback(async (taskId: string) => {
     chrome.runtime.sendMessage({ type: 'RETRY_DOWNLOAD', payload: { taskId } })

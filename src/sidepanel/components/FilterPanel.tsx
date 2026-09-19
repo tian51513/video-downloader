@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Collapse, Checkbox, Select, Button, Space, Typography } from 'antd'
 import { FilterOutlined, UndoOutlined } from '@ant-design/icons'
-import type { VideoFilter, VideoFormat } from '../../types'
+import type { VideoFilter, MediaFormat } from '../../types'
 
 const { Text } = Typography
 
@@ -12,7 +12,7 @@ interface FilterPanelProps {
   onReset: () => void
 }
 
-const ALL_FORMATS: VideoFormat[] = ['mp4', 'mkv', 'webm', 'flv', 'avi', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav']
+const ALL_FORMATS: MediaFormat[] = ['mp4', 'mkv', 'webm', 'flv', 'avi', 'hls', 'dash', 'blob', 'ts', 'mp3', 'm4a', 'flac', 'ogg', 'wav']
 
 export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSources, onFilterChange, onReset }) => {
   const [collapsed, setCollapsed] = useState(true)
@@ -38,7 +38,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({ filter, availableSourc
               <Checkbox.Group
                 options={ALL_FORMATS.map((f) => ({ label: f.toUpperCase(), value: f }))}
                 value={filter.formats}
-                onChange={(vals) => onFilterChange({ formats: vals as VideoFormat[] })}
+                onChange={(vals) => onFilterChange({ formats: vals as MediaFormat[] })}
               />
             </div>
             <div>

@@ -7,6 +7,7 @@ import type {
 import { getFullSettings } from './settings'
 import { saveDownloads, getDownloads } from '../utils/storage'
 import { downloadHls } from './hls-downloader'
+import { fetchAndDownload } from '../utils/offscreen-blob'
 
 let activeDownloads: Map<string, { abortController?: AbortController; chromeDownloadId?: number; filename?: string; isHls?: boolean }> = new Map()
 let downloadQueue: DownloadTask[] = []
@@ -35,8 +36,8 @@ export async function createDownloadTask(
   video: DetectedVideo,
   downloader: DownloaderType
 ): Promise<DownloadTask> {
-  // URL 级去重
-  const existing = downloadQueue.find((t) => t.video.url === video.url && t.status !== 'failed' && t.status !== 'cancelled')
+  // URL 级去重（失败任务除外——允许重试重建；状态机里没有 'cancelled'，取消即 failed）
+  const existing = downloadQueue.find((t) => t.video.url === video.url && t.status !== 'failed')
   if (existing) return existing
 
   const settings = await getFullSettings()
@@ -185,6 +186,9 @@ export async function completeDownloadTask(
   broadcastDownloadUpdate(task)
 }
 
+// 页面/offscreen/save-helper 多来源上报进度，可能乱序或字段缺失：
+// - 只接受有限数值，忽略 undefined/NaN（防止把任务进度抹成 undefined）
+// - progress 单调递增，不允许回退
 export async function updateTaskProgressFromPage(
   taskId: string,
   progress: number,
@@ -195,12 +199,24 @@ export async function updateTaskProgressFromPage(
   const task = downloadQueue.find((t) => t.id === taskId)
   if (!task) return
 
-  task.progress = progress
-  task.speed = speed
-  task.downloadedBytes = downloadedBytes
-  if (totalBytes !== undefined && totalBytes > 0) task.totalBytes = totalBytes
+  if (Number.isFinite(progress) && progress > (task.progress ?? 0)) {
+    task.progress = progress
+  }
+  if (Number.isFinite(speed)) task.speed = speed
+  if (Number.isFinite(downloadedBytes)) task.downloadedBytes = downloadedBytes
+  if (Number.isFinite(totalBytes) && totalBytes > 0) task.totalBytes = totalBytes
 
   broadcastDownloadUpdate(task)
+}
+
+// 从页面/辅助页报告失败：中止活动下载并把任务置为 failed（区别于 cancelDownload 的"已取消"）
+export async function failDownloadTask(taskId: string, error?: string): Promise<void> {
+  const entry = activeDownloads.get(taskId)
+  if (entry?.abortController) {
+    entry.abortController.abort()
+  }
+  activeDownloads.delete(taskId)
+  updateTaskStatus(taskId, 'failed', error || '下载失败')
 }
 
 // ===== 从页面获取最新标题 =====
@@ -344,7 +360,11 @@ async function downloadWithChrome(task: DownloadTask, settings: any): Promise<vo
 
 // ===== 设置 Referer 和移除 Content-Disposition =====
 
-async function setupDownloadRules(task: DownloadTask): Promise<void> {
+export async function setupDownloadRules(task: DownloadTask): Promise<void> {
+  // DNR 无法拦截 blob:/data: 等 URL，且其 origin 为 "null"，生成的规则是无效规则
+  if (!task.video.url.startsWith('http')) {
+    return
+  }
   const urlObj = new URL(task.video.url)
   const domain = urlObj.hostname
   const pageDomain = task.video.pageUrl ? new URL(task.video.pageUrl).hostname : domain
@@ -353,6 +373,8 @@ async function setupDownloadRules(task: DownloadTask): Promise<void> {
     // 添加 Referer（rule ID 必须是正整数）
     const ruleId = Math.abs(hashCode(task.id)) % 2147483647 || 1
     await chrome.declarativeNetRequest.updateSessionRules({
+      // 当前 @types/chrome 的 DNR 枚举落后于 Chrome 实际支持的 action/operation/resourceTypes，整体放宽
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       addRules: [{
         id: ruleId,
         priority: 1,
@@ -369,7 +391,7 @@ async function setupDownloadRules(task: DownloadTask): Promise<void> {
           urlFilter: `||${urlObj.origin}`,
           resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'other'],
         },
-      }],
+      }] as any,
       removeRuleIds: [ruleId],
     })
   } catch (error) {
@@ -440,16 +462,38 @@ async function monitorChromeDownload(task: DownloadTask, downloadId: number): Pr
 // ===== Layer 2: Offscreen Document fetch =====
 
 async function downloadViaOffscreen(task: DownloadTask): Promise<void> {
-  const blobUrl = await createOffscreenBlob(task.video.url)
+  const fileName = buildDownloadFileName(task.video.title, getExtensionFromFormat(task.video.format))
+  const mimeType = getMimeTypeFromFormat(task.video.format)
 
-  // 在 offscreen 中通过 save-helper 保存
-  await chrome.runtime.sendMessage({
-    type: 'SAVE_HELPER_DOWNLOAD',
-    payload: { url: blobUrl, fileName: buildDownloadFileName(task.video.title, getExtensionFromFormat(task.video.format)), taskId: task.id },
+  // offscreen document 内 fetch → File → blob URL → chrome.downloads
+  // (协议见 assets/offscreen.js 的 OFFSCREEN_FETCH_AND_DOWNLOAD handler)
+  const result = await fetchAndDownload({
+    url: task.video.url,
+    referer: task.video.pageUrl || task.video.url,
+    mimeType,
+    taskId: task.id,
+    filename: fileName,
+    saveAs: false,
   })
 
-  activeDownloads.delete(task.id)
-  updateTaskStatus(task.id, 'completed')
+  if (result.downloadId) {
+    await updateTaskChromeDownloadId(task.id, result.downloadId)
+    await completeDownloadTask(task.id, result.downloadId)
+    return
+  }
+
+  // 数据已下载但 chrome.downloads 保存失败：offscreen 已把数据写入 IndexedDB，
+  // 打开 save-helper 页面按 key 取回并保存（与 HLS 保存降级同一协议）
+  if (result.fallbackKey) {
+    const helperUrl = chrome.runtime.getURL(
+      `save-helper.html?k=${encodeURIComponent(result.fallbackKey)}&n=${encodeURIComponent(fileName)}&m=${encodeURIComponent(mimeType)}&s=0&t=${encodeURIComponent(task.id)}`
+    )
+    await chrome.tabs.create({ url: helperUrl, active: true })
+    await waitForTaskCompletion(task.id, 120000)
+    return
+  }
+
+  throw new Error('Offscreen 下载失败')
 }
 
 // ===== Layer 3: 页面 MAIN world fetch =====
@@ -458,7 +502,9 @@ async function downloadViaPageFetch(task: DownloadTask): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) throw new Error('无活动标签页')
 
-  await chrome.tabs.sendMessage(tab.id, {
+  // 无接收方或接收方不响应时 sendMessage 返回 undefined——立即失败，
+  // 避免后面 waitForTaskCompletion 白等 2 分钟
+  const response = await chrome.tabs.sendMessage(tab.id, {
     type: 'PAGE_FETCH_DOWNLOAD',
     payload: {
       url: task.video.url,
@@ -466,6 +512,9 @@ async function downloadViaPageFetch(task: DownloadTask): Promise<void> {
       fileName: buildDownloadFileName(task.video.title, getExtensionFromFormat(task.video.format)),
     },
   })
+  if (response === undefined) {
+    throw new Error('页面无下载接收方')
+  }
 
   // 等待完成或超时
   await waitForTaskCompletion(task.id, 120000)
@@ -474,7 +523,8 @@ async function downloadViaPageFetch(task: DownloadTask): Promise<void> {
 // ===== Layer 4: save-helper 直接 fetch =====
 
 async function downloadViaSaveHelper(task: DownloadTask): Promise<void> {
-  await chrome.runtime.sendMessage({
+  // save-helper 未打开时不响应——立即失败，避免 waitForTaskCompletion 白等 2 分钟
+  const response = await chrome.runtime.sendMessage({
     type: 'SAVE_HELPER_FETCH_DOWNLOAD',
     payload: {
       url: task.video.url,
@@ -482,6 +532,9 @@ async function downloadViaSaveHelper(task: DownloadTask): Promise<void> {
       taskId: task.id,
     },
   })
+  if (response === undefined) {
+    throw new Error('save-helper 未就绪')
+  }
 
   await waitForTaskCompletion(task.id, 120000)
 }
@@ -596,6 +649,21 @@ async function downloadWithIDM(task: DownloadTask): Promise<void> {
 
 // ===== 辅助函数 =====
 
+function getMimeTypeFromFormat(format: string): string {
+  const audioMime: Record<string, string> = {
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    flac: 'audio/flac',
+    ogg: 'audio/ogg',
+    opus: 'audio/opus',
+    wav: 'audio/wav',
+  }
+  if (audioMime[format]) return audioMime[format]
+  if (format === 'ts') return 'video/mp2t'
+  return `video/${format}`
+}
+
 function getExtensionFromFormat(format: string): string {
   const map: Record<string, string> = {
     mp4: '.mp4', mkv: '.mkv', webm: '.webm', flv: '.flv', avi: '.avi',
@@ -606,7 +674,7 @@ function getExtensionFromFormat(format: string): string {
   return map[format] || '.mp4'
 }
 
-function buildDownloadFileName(title: string, ext: string): string {
+export function buildDownloadFileName(title: string, ext: string): string {
   const settings = getNamingTemplateSync()
   const vars: Record<string, string> = {
     name: (title || 'download').replace(/\.[^.]+$/, ''),
@@ -648,41 +716,29 @@ setInterval(async () => {
   } catch { /* ignore */ }
 }, 10000)
 
-async function createOffscreenBlob(url: string): Promise<string> {
-  // 创建 offscreen document
-  await chrome.offscreen.hasDocument().then(async (hasDoc) => {
-    if (!hasDoc) {
-      await chrome.offscreen.createDocument({
-        url: chrome.runtime.getURL('assets/offscreen.html'),
-        reasons: ['BLOB'] as any,
-      })
-    }
-  })
-
-  // 在 offscreen 中创建 blob URL
-  const response = await chrome.runtime.sendMessage({
-    type: 'CREATE_OFFSCREEN_BLOB',
-    payload: { url },
-  })
-
-  if (!response?.blobUrl) throw new Error('创建 Blob URL 失败')
-  return response.blobUrl
-}
-
+// 等待跨上下文下载（save-helper / 页面 fetch）完成：
+// 完成→resolve；失败/超时→reject（让上层降级链继续尝试下一层）
 function waitForTaskCompletion(taskId: string, timeout: number): Promise<void> {
-  return new Promise((resolve) => {
-    const check = setInterval(() => {
+  return new Promise((resolve, reject) => {
+    let check: ReturnType<typeof setInterval> | undefined
+    const finish = (fn: () => void) => {
+      if (check) clearInterval(check)
+      clearTimeout(timer)
+      fn()
+    }
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error('等待下载完成超时')))
+    }, timeout)
+    check = setInterval(() => {
       const task = downloadQueue.find((t) => t.id === taskId)
-      if (!task || task.status === 'completed' || task.status === 'failed') {
-        clearInterval(check)
-        resolve()
+      if (!task) {
+        finish(() => resolve())
+      } else if (task.status === 'completed') {
+        finish(() => resolve())
+      } else if (task.status === 'failed') {
+        finish(() => reject(new Error(task.error || '下载失败')))
       }
     }, 1000)
-
-    setTimeout(() => {
-      clearInterval(check)
-      resolve()
-    }, timeout)
   })
 }
 

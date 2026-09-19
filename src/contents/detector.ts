@@ -162,6 +162,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   } else if (message.type === 'CLEAR_PAGE_VIDEOS') {
     detectedVideos.clear()
     sendResponse({ success: true })
+  } else {
+    // 未知消息不要保持通道：返回 false 让发送方立即得到 undefined，
+    // 否则 tabs.sendMessage 会永久悬挂（如 PAGE_FETCH_DOWNLOAD）
+    return false
   }
   return true
 })
