@@ -29,18 +29,17 @@ vi.mock('../utils/storage', () => ({
     return Promise.resolve()
   }),
   getDownloads: vi.fn(() => Promise.resolve(storageState.tasks)),
-}))
-
-// mock settings
-vi.mock('../background/settings', () => ({
-  getFullSettings: vi.fn(() =>
-    Promise.resolve({
+  getSettings: vi.fn(() =>
+    Promise.resolve(
+    {
       downloadSettings: { maxConcurrent: 3, askSaveLocation: false },
-    })
+    }
+    )
   ),
   initDefaultSettings: vi.fn(() => Promise.resolve()),
 }))
 
+// mock settings
 // mock offscreen-blob
 vi.mock('../utils/offscreen-blob', () => ({
   fetchAndDownload: vi.fn(),

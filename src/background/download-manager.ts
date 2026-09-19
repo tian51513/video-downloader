@@ -4,8 +4,7 @@ import type {
   DownloadSettings,
   DownloaderType,
 } from '../types'
-import { getFullSettings } from './settings'
-import { saveDownloads, getDownloads } from '../utils/storage'
+import { saveDownloads, getDownloads, getSettings as getFullSettings } from '../utils/storage'
 import { downloadHls } from './hls-downloader'
 import { fetchAndDownload } from '../utils/offscreen-blob'
 

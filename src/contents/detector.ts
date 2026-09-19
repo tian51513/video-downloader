@@ -1,4 +1,5 @@
 import type { PlasmoCSConfig } from 'plasmo'
+import { getSettings } from '../utils/storage'
 
 export const config: PlasmoCSConfig = {
   matches: ['<all_urls>'],
@@ -37,36 +38,34 @@ interface DetectedVideo {
   detectedAt: number
 }
 
-function handleDetectedVideo(video: DetectedVideo): void {
+async function handleDetectedVideo(video: DetectedVideo): Promise<void> {
   if (!isExtensionContextValid()) return
   if (detectedVideos.has(video.id)) return
 
-  // 黑名单过滤
-  chrome.storage.local.get('app-settings', (result) => {
-    const settings = result['app-settings']
-    const blacklist = settings?.blacklist || []
+  // 黑名单过滤（走 storage wrapper：与 DEFAULT_SETTINGS 合并，key 不再硬编码）
+  const settings = await getSettings()
+  const blacklist = settings.blacklist || []
 
-    const isBlocked = blacklist
-      .filter((r: any) => r.enabled)
-      .some((rule: any) => {
-        try {
-          if (rule.type === 'domain') {
-            return new URL(video.url).hostname.includes(rule.pattern)
-          } else if (rule.type === 'regex') {
-            return new RegExp(rule.pattern).test(video.url)
-          } else {
-            return video.url.includes(rule.pattern)
-          }
-        } catch {
-          return false
+  const isBlocked = blacklist
+    .filter((r) => r.enabled)
+    .some((rule) => {
+      try {
+        if (rule.type === 'domain') {
+          return new URL(video.url).hostname.includes(rule.pattern)
+        } else if (rule.type === 'regex') {
+          return new RegExp(rule.pattern).test(video.url)
+        } else {
+          return video.url.includes(rule.pattern)
         }
-      })
+      } catch {
+        return false
+      }
+    })
 
-    if (isBlocked) return
+  if (isBlocked) return
 
-    detectedVideos.set(video.id, video)
-    sendVideosToBackground()
-  })
+  detectedVideos.set(video.id, video)
+  sendVideosToBackground()
 }
 
 function sendVideosToBackground(): void {
@@ -143,7 +142,7 @@ window.addEventListener('message', (event) => {
       if (updated) sendVideosToBackground()
       return
     }
-    handleDetectedVideo(video)
+    void handleDetectedVideo(video)
   }
 })
 

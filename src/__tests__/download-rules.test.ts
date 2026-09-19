@@ -8,10 +8,11 @@ vi.stubGlobal('chrome', chrome)
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),
   getDownloads: vi.fn(() => Promise.resolve([])),
-}))
-
-vi.mock('../background/settings', () => ({
-  getFullSettings: vi.fn(() => Promise.resolve({ downloadSettings: {} })),
+  getSettings: vi.fn(() =>
+    Promise.resolve(
+    { downloadSettings: {} }
+    )
+  ),
   initDefaultSettings: vi.fn(() => Promise.resolve()),
 }))
 

@@ -1,4 +1,4 @@
-import { initDefaultSettings, getFullSettings, patchSettings, resetToDefaults } from './settings'
+import { initDefaultSettings } from '../utils/storage'
 import {
   createDownloadTask,
   pauseDownload,
@@ -335,16 +335,6 @@ async function handleMessage(
     case 'GET_DOWNLOADS': {
       const tasks = await getAllDownloadTasks()
       return { tasks }
-    }
-
-    case 'GET_SETTINGS': {
-      const settings = await getFullSettings()
-      return { settings }
-    }
-
-    case 'UPDATE_SETTINGS': {
-      const updated = await patchSettings(message.payload)
-      return { settings: updated }
     }
 
     // ===== 页面下载进度 =====

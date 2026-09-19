@@ -176,8 +176,6 @@ assets/
 | DOWNLOAD_PROGRESS | bg→ui | 下载进度更新 |
 | DOWNLOAD_COMPLETE | bg→ui | 下载完成通知 |
 | DOWNLOAD_FAILED | bg→ui | 下载失败通知 |
-| GET_SETTINGS | ui→bg | 获取设置 |
-| UPDATE_SETTINGS | ui→bg | 更新设置 |
 | CLEAR_COMPLETED_DOWNLOADS | ui→bg | 清除已完成下载 |
 | CLEAR_COMPLETED_FULL_DOWNLOADS | ui→bg | 清除已完成下载 (含文件) |
 | CLEAR_FAILED_DOWNLOADS | ui→bg | 清除失败下载 |

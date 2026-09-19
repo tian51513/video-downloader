@@ -4,7 +4,7 @@
  */
 
 import type { DownloadTask, DownloadStatus } from '../types'
-import { getFullSettings } from './settings'
+import { getSettings as getFullSettings } from '../utils/storage'
 import { sanitizeName } from '../utils/sanitize'
 import { looksLikeFallback, cleanSiteTitleSuffix, extractNameFromUrl } from './title-utils'
 import { getDirectoryHandle, DOWNLOAD_DIR } from '../utils/directory-handle'

@@ -1,6 +1,7 @@
 import { DEFAULT_SETTINGS, type AppSettings } from '../types'
 
-const SETTINGS_KEY = 'app-settings'
+/** 设置存储 key（唯一定义点；settings-store 的 onChanged 监听也用它） */
+export const SETTINGS_KEY = 'app-settings'
 const VIDEOS_KEY = 'detected-videos'
 const DOWNLOADS_KEY = 'download-tasks'
 
@@ -9,6 +10,14 @@ export async function getSettings(): Promise<AppSettings> {
   const stored = result[SETTINGS_KEY] as Partial<AppSettings> | undefined
   if (!stored) return { ...DEFAULT_SETTINGS }
   return { ...DEFAULT_SETTINGS, ...stored }
+}
+
+/** SW 启动时补写默认设置（仅在键缺失时；原 background/settings.ts 转发层已并入） */
+export async function initDefaultSettings(): Promise<void> {
+  const result = await chrome.storage.local.get(SETTINGS_KEY)
+  if (!result[SETTINGS_KEY]) {
+    await chrome.storage.local.set({ [SETTINGS_KEY]: DEFAULT_SETTINGS })
+  }
 }
 
 export async function updateSettings(

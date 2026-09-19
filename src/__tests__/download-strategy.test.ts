@@ -16,14 +16,13 @@ vi.stubGlobal('chrome', chrome)
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),
   getDownloads: vi.fn(() => Promise.resolve([])),
-}))
-
-vi.mock('../background/settings', () => ({
-  getFullSettings: vi.fn(() =>
-    Promise.resolve({
+  getSettings: vi.fn(() =>
+    Promise.resolve(
+    {
       downloadSettings: { maxConcurrent: 3, askSaveLocation: false },
       externalDownloaderConfig: { aria2RpcUrl: 'http://localhost:6800/jsonrpc' },
-    })
+    }
+    )
   ),
   initDefaultSettings: vi.fn(() => Promise.resolve()),
 }))

@@ -21,11 +21,10 @@ vi.mock('../utils/storage', () => ({
     return Promise.resolve()
   }),
   getDownloads: vi.fn(() => Promise.resolve(storageState.tasks)),
-}))
-
-vi.mock('../background/settings', () => ({
-  getFullSettings: vi.fn(() =>
-    Promise.resolve({ downloadSettings: { maxConcurrent: 3, askSaveLocation: false } })
+  getSettings: vi.fn(() =>
+    Promise.resolve(
+    { downloadSettings: { maxConcurrent: 3, askSaveLocation: false } }
+    )
   ),
   initDefaultSettings: vi.fn(() => Promise.resolve()),
 }))
