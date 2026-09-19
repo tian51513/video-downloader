@@ -1,56 +1,32 @@
-import React, { useEffect, useState, useCallback } from 'react'
-import { ConfigProvider, theme, Typography, Space, Button, Badge, Dropdown, Modal, message } from 'antd'
-import { SettingOutlined, AppstoreOutlined, DeleteOutlined, ClearOutlined, CloseCircleOutlined, HistoryOutlined, ScissorOutlined } from '@ant-design/icons'
+import React, { useCallback } from 'react'
+import { ConfigProvider, theme, Typography, Space, Button, Badge, Dropdown } from 'antd'
+import { SettingOutlined, AppstoreOutlined, DeleteOutlined, HistoryOutlined, ScissorOutlined, CloseCircleOutlined, ClearOutlined } from '@ant-design/icons'
 import { useVideoStore } from '../store/video-store'
 import { useSettingsStore } from '../store/settings-store'
-import { useDownloadStore } from '../store/download-store'
+import { useExtensionBridge } from '../ui/useExtensionBridge'
 import { VideoList } from './components/VideoList'
-import type { DetectedVideo, ExtensionMessage, DownloadTask } from '../types'
+import type { DetectedVideo } from '../types'
 
 const { Title, Text } = Typography
 
 function IndexPopup() {
-  const { filteredGroups, isDetecting, setVideos, clearVideos, clearOrphanedVideos, clearVideosByUrls } = useVideoStore()
-  const { settings, loadSettings } = useSettingsStore()
-  const { tasks, addTask, clearCompleted, clearCompletedFull, clearFailed, clearOrphanedTasks, clearPageTasks } = useDownloadStore()
-  const [currentTab, setCurrentTab] = useState('')
-
-  useEffect(() => { loadSettings() }, [loadSettings])
-
-  // 加载下载任务
-  useEffect(() => {
-    chrome.runtime.sendMessage({ type: 'GET_DOWNLOADS' }, (response) => {
-      if (response?.tasks) {
-        for (const t of response.tasks) addTask(t)
-      }
-    })
-  }, [addTask])
-
-  // 加载所有标签页的视频（共享模式）
-  useEffect(() => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.url) setCurrentTab(tabs[0].url)
-    })
-    chrome.runtime.sendMessage({ type: 'GET_VIDEOS' }, (response) => {
-      if (response?.videos) setVideos(response.videos)
-    })
-  }, [setVideos])
-
-  useEffect(() => {
-    const listener = (message: ExtensionMessage) => {
-      if (message.type === 'VIDEO_DETECTED' && message.payload?.videos) {
-        const store = useVideoStore.getState()
-        const pageUrl = message.payload.pageUrl
-        const merged = [...store.videos.filter((v) => v.pageUrl !== pageUrl), ...message.payload.videos]
-        store.setVideos(merged)
-      } else if (message.type === 'DOWNLOAD_PROGRESS') {
-        const task = message.payload as DownloadTask
-        addTask(task)
-      }
-    }
-    chrome.runtime.onMessage.addListener(listener)
-    return () => chrome.runtime.onMessage.removeListener(listener)
-  }, [addTask])
+  const { filteredGroups, isDetecting } = useVideoStore()
+  const { settings } = useSettingsStore()
+  const {
+    tasks,
+    handleDownload,
+    handlePause,
+    handleCancel,
+    handleRetry,
+    clearAllVideos,
+    clearCurrentPageDownloads,
+    clearCompleted,
+    clearCompletedFull,
+    clearFailed,
+    clearOrphaned,
+    downloadingCount,
+    isDark,
+  } = useExtensionBridge()
 
   const handlePreview = useCallback((video: DetectedVideo) => {
     chrome.tabs.create({
@@ -60,37 +36,18 @@ function IndexPopup() {
     })
   }, [])
 
-  const handleDownload = useCallback(async (video: DetectedVideo) => {
-    chrome.runtime.sendMessage({
-      type: 'START_DOWNLOAD',
-      payload: { video, downloader: settings.defaultDownloader },
-    })
-  }, [settings.defaultDownloader])
+  const handleDownloadWithDefault = useCallback(
+    (video: DetectedVideo) => handleDownload(video, settings.defaultDownloader),
+    [handleDownload, settings.defaultDownloader]
+  )
 
-  const handlePause = useCallback(async (taskId: string) => {
-    chrome.runtime.sendMessage({ type: 'PAUSE_DOWNLOAD', payload: { taskId } })
-  }, [])
-
-  const handleCancel = useCallback(async (taskId: string) => {
-    // 与 sidepanel 统一：取消保留任务记录（标记为已取消，可重试），
-    // 而不是 REMOVE_DOWNLOAD 直接删除任务
-    chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD', payload: { taskId } }).catch(() => {})
-  }, [])
-
-  const handleRetry = useCallback(async (taskId: string) => {
-    chrome.runtime.sendMessage({ type: 'RETRY_DOWNLOAD', payload: { taskId } })
-  }, [])
-
-  const handleDownloadAll = useCallback(async () => {
+  const handleDownloadAll = useCallback(() => {
     for (const group of filteredGroups) {
       for (const video of group.versions) {
-        chrome.runtime.sendMessage({
-          type: 'START_DOWNLOAD',
-          payload: { video, downloader: settings.defaultDownloader },
-        })
+        handleDownload(video, settings.defaultDownloader)
       }
     }
-  }, [filteredGroups, settings.defaultDownloader])
+  }, [filteredGroups, handleDownload, settings.defaultDownloader])
 
   const handleOpenSidePanel = useCallback(async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -100,82 +57,13 @@ function IndexPopup() {
     }
   }, [])
 
-  // 清除操作
-  const handleClearCurrentList = useCallback(() => {
-    Modal.confirm({
-      title: '确定清除当前页面的下载记录？',
-      okText: '确定',
-      cancelText: '取消',
-      onOk: () => {
-        clearPageTasks(currentTab)
-        chrome.runtime.sendMessage({ type: 'CLEAR_PAGE_DOWNLOADS', payload: { pageUrl: currentTab } }).catch(() => {})
-        message.success('已清除当前页面的下载记录')
-      },
-    })
-  }, [currentTab, clearPageTasks])
-
-  const handleClearCompleted = useCallback(() => {
-    clearCompleted()
-    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_DOWNLOADS' }).catch(() => {})
-    message.success('已清除完成记录')
-  }, [clearCompleted])
-
-  const handleClearCompletedFull = useCallback(() => {
-    // 只收集已完成任务的 URL
-    const urlsToRemove = tasks
-      .filter((t) => t.status === 'completed')
-      .map((t) => t.video.url)
-
-    clearCompletedFull()
-    clearVideosByUrls(urlsToRemove)
-    chrome.runtime.sendMessage({ type: 'CLEAR_COMPLETED_FULL_DOWNLOADS' }).catch(() => {})
-    chrome.runtime.sendMessage({ type: 'CLEAR_VIDEOS_BY_URLS', payload: { urls: urlsToRemove } }).catch(() => {})
-    message.success('已清除完成记录（含同名版本）')
-  }, [tasks, clearCompletedFull, clearVideosByUrls])
-
-  const handleClearFailed = useCallback(() => {
-    clearFailed()
-    chrome.runtime.sendMessage({ type: 'CLEAR_FAILED_DOWNLOADS' }).catch(() => {})
-    message.success('已清除失败记录')
-  }, [clearFailed])
-
-  const handleClearOrphaned = useCallback(async () => {
-    const tabs = await chrome.tabs.query({})
-    const openUrls = tabs.map((t) => t.url || '').filter(Boolean)
-    clearOrphanedVideos(openUrls)
-    clearOrphanedTasks(openUrls)
-    chrome.runtime.sendMessage({ type: 'CLEAR_ORPHANED_VIDEOS', payload: { openPageUrls: openUrls } }).catch(() => {})
-    chrome.runtime.sendMessage({ type: 'CLEAR_ORPHANED_DOWNLOADS', payload: { openPageUrls: openUrls } }).catch(() => {})
-    message.success('已清除已关闭页面的视频')
-  }, [clearOrphanedVideos, clearOrphanedTasks])
-
-  const downloadingCount = tasks.filter((t) => t.status === 'downloading' || t.status === 'merging').length
-
-  const isDark = settings.themeMode === 'dark' ||
-    (settings.themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-
-  const handleClearAllVideos = useCallback(() => {
-    Modal.confirm({
-      title: '确定清除所有已检测的视频？',
-      okText: '确定',
-      cancelText: '取消',
-      onOk: () => {
-        clearVideos()
-        chrome.runtime.sendMessage({ type: 'CLEAR_ALL_VIDEOS' }).catch(() => {})
-        // 触发所有标签页重新检测视频
-        chrome.runtime.sendMessage({ type: 'RESCAN_ALL_TABS' }).catch(() => {})
-        message.success('已清除所有检测视频，正在重新检测...')
-      },
-    })
-  }, [clearVideos])
-
   const clearMenuItems = [
-    { key: 'all', icon: <DeleteOutlined />, label: '清除所有视频', onClick: handleClearAllVideos },
-    { key: 'current', icon: <DeleteOutlined />, label: '清除当前页面下载', onClick: handleClearCurrentList },
-    { key: 'completed', icon: <HistoryOutlined />, label: '清除已完成', onClick: handleClearCompleted },
-    { key: 'completed-full', icon: <ScissorOutlined />, label: '清除已完成(完整)', onClick: handleClearCompletedFull },
-    { key: 'failed', icon: <CloseCircleOutlined />, label: '清除失败', onClick: handleClearFailed },
-    { key: 'orphaned', icon: <ClearOutlined />, label: '清除已关闭页面', onClick: handleClearOrphaned },
+    { key: 'all', icon: <DeleteOutlined />, label: '清除所有视频', onClick: clearAllVideos },
+    { key: 'current', icon: <DeleteOutlined />, label: '清除当前页面下载', onClick: clearCurrentPageDownloads },
+    { key: 'completed', icon: <HistoryOutlined />, label: '清除已完成', onClick: clearCompleted },
+    { key: 'completed-full', icon: <ScissorOutlined />, label: '清除已完成(完整)', onClick: clearCompletedFull },
+    { key: 'failed', icon: <CloseCircleOutlined />, label: '清除失败', onClick: clearFailed },
+    { key: 'orphaned', icon: <ClearOutlined />, label: '清除已关闭页面', onClick: clearOrphaned },
   ]
 
   return (
@@ -223,7 +111,7 @@ function IndexPopup() {
             isDetecting={isDetecting}
             downloadTasks={tasks}
             onPreview={handlePreview}
-            onDownload={handleDownload}
+            onDownload={handleDownloadWithDefault}
             onPause={handlePause}
             onCancel={handleCancel}
             onRetry={handleRetry}
