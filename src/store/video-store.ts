@@ -1,11 +1,6 @@
 import { create } from 'zustand'
+import { isAudioFormat } from '../shared/formats'
 import type { DetectedVideo, VideoFilter, VideoGroup } from '../types'
-
-const AUDIO_FORMATS_SET = new Set(['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'])
-
-function isAudioFormat(format: string): boolean {
-  return AUDIO_FORMATS_SET.has(format)
-}
 
 function sanitizeTitle(title: string): string {
   if (!title || title.trim().length === 0) return ''

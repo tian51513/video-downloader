@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { isAudioFormat } from '../../shared/formats'
 import { Typography, Space, Tag, Button } from 'antd'
 import { CloseOutlined, PlayCircleOutlined, PauseCircleOutlined, FullscreenOutlined, CustomerServiceOutlined } from '@ant-design/icons'
 import type { DetectedVideo } from '../../types'
@@ -8,10 +9,8 @@ import dashjs from 'dashjs'
 
 const { Text } = Typography
 
-const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'])
-
 function isAudio(video: DetectedVideo): boolean {
-  return video.mediaType === 'audio' || (!video.mediaType && AUDIO_FORMATS.has(video.format as string))
+  return video.mediaType === 'audio' || (!video.mediaType && isAudioFormat(video.format))
 }
 
 const formatColors: Record<string, string> = {

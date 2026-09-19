@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react'
+import { isAudioFormat } from '../../shared/formats'
 import { Button, Space, Tag, Typography, Progress } from 'antd'
 import {
   PlayCircleOutlined,
@@ -16,10 +17,8 @@ import { formatFileSize, formatDuration, formatBitrate, formatSpeed, getResoluti
 
 const { Text } = Typography
 
-const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'opus'])
-
 function isAudio(video: DetectedVideo): boolean {
-  return video.mediaType === 'audio' || (!video.mediaType && AUDIO_FORMATS.has(video.format as string))
+  return video.mediaType === 'audio' || (!video.mediaType && isAudioFormat(video.format))
 }
 
 const formatColors: Record<string, string> = {
