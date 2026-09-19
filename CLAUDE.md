@@ -44,6 +44,8 @@ src/
 │   ├── download-layer-fallback.test.ts      # 多层级降级测试
 │   ├── download-filename.test.ts      # 文件名/标题兜底测试
 │   ├── download-rules.test.ts         # DNR 下载规则测试
+│   ├── background-router.test.ts      # background 消息路由契约测试
+│   ├── hls-downloader.test.ts         # HLS 下载编排全流程测试
 │   ├── idb.test.ts                    # IndexedDB 深模块测试
 │   ├── injector-m3u8-parser.test.ts   # m3u8 嗅探解析测试 (真实 shared 模块)
 │   ├── injector-bundle.test.ts        # injector.js 构建产物冒烟测试
@@ -56,10 +58,15 @@ src/
 ├── injector-entry.ts    # injector.js 打包入口 (esbuild IIFE)
 ├── background/          # Service Worker (扩展核心)
 │   ├── index.ts         # 消息路由、context menu、tab 事件、keepalive alarm、MAIN world 脚本注入
-│   ├── download-manager.ts  # 下载队列、多层级降级下载、并发控制、进度追踪
+│   ├── download-manager.ts  # 下载 facade：任务创建(去重+标题刷新)、队列调度、下载方式分发
+│   ├── downloads/           # 下载模块族（自 download-manager 拆分）
+│   │   ├── task-store.ts        # 任务状态机（队列+活动句柄+持久化+清理变体，叶子模块）
+│   │   ├── chrome-downloader.ts # L1-L4 降级链 + chrome.downloads 监控 + 文件名安全网 + HLS 包装
+│   │   ├── external-downloaders.ts # aria2/Motrix RPC + IDM 协议
+│   │   ├── naming.ts            # 文件名构建 + 命名模板缓存
+│   │   └── dnr-rules.ts         # Referer 伪造 / Content-Disposition 移除规则
 │   ├── hls-downloader.ts    # HLS 下载编排 (m3u8→分片下载→解密→mux.js转封装→保存)
 │   ├── hls-parser.ts        # m3u8 解析 (master/media playlist, #EXT-X-MAP, #EXT-X-KEY)
-│   └── settings.ts          # 设置读写 (chrome.storage)
 ├── contents/            # Content Script — ISOLATED world (Plasmo CS, 消息中转/检测缓存)
 │   └── detector.ts      # 接收 injector-script postMessage，黑名单过滤/去重/元数据更新，转发下载进度/错误，处理 DETECT_NOW 重扫描
 ├── popup/               # 弹出窗口 UI
