@@ -5,11 +5,14 @@
  *    供 chrome.scripting.executeScript({ files }) 注入 MAIN world
  */
 
-import { copyFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync } from 'node:fs'
 import { build } from 'esbuild'
 
 const target = process.argv[2] || 'chrome-mv3-prod'
 const outDir = `build/${target}`
+
+// copyFileSync 不会自动创建目标目录（dev 模式下 build/ 可能尚未生成）
+mkdirSync(outDir, { recursive: true })
 
 for (const f of [
   'assets/offscreen.html',
