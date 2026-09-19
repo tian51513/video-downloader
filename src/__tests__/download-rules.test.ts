@@ -1,23 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { DownloadTask } from '../types'
 
-// Mock Chrome API (must be complete - download-manager references chrome at module top level)
-const mockUpdateSessionRules = vi.fn()
+// Mock Chrome API (download-manager 在模块顶层注册 onDeterminingFilename 监听)
 const updateRuleCalls: any[] = []
 
 vi.stubGlobal('chrome', {
   declarativeNetRequest: {
-    updateSessionRules: (...args: any[]) => {
-      updateRuleCalls.push(args[0])
-      return mockUpdateSessionRules(...args)
-    },
+    updateSessionRules: vi.fn((args: any) => {
+      updateRuleCalls.push(args)
+      return Promise.resolve()
+    }),
   },
   downloads: {
     onDeterminingFilename: { addListener: vi.fn() },
   },
   runtime: {
-    sendMessage: vi.fn(),
-    getViews: vi.fn(() => []),
-    getURL: vi.fn((path) => `chrome-extension://fake-id/${path}`),
+    sendMessage: vi.fn(() => Promise.resolve({})),
+    getURL: vi.fn((path: string) => path),
     lastError: undefined,
   },
   tabs: {
@@ -25,66 +24,86 @@ vi.stubGlobal('chrome', {
   },
 })
 
-const { addDownloadRules, removeDownloadRules } = await import('../background/download-manager')
+vi.mock('../utils/storage', () => ({
+  saveDownloads: vi.fn(() => Promise.resolve()),
+  getDownloads: vi.fn(() => Promise.resolve([])),
+}))
 
-describe('addDownloadRules', () => {
+vi.mock('../background/settings', () => ({
+  getFullSettings: vi.fn(() => Promise.resolve({ downloadSettings: {} })),
+  initDefaultSettings: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('../utils/offscreen-blob', () => ({
+  fetchAndDownload: vi.fn(),
+  ensureOffscreen: vi.fn(),
+}))
+
+vi.mock('../background/hls-downloader', () => ({
+  downloadHls: vi.fn(),
+}))
+
+const { setupDownloadRules } = await import('../background/download-manager')
+
+const makeTask = (url: string, pageUrl: string): DownloadTask =>
+  ({
+    id: `t_${Math.random().toString(36).slice(2, 8)}`,
+    video: { url, pageUrl },
+    status: 'pending',
+    progress: 0,
+    speed: 0,
+    downloadedBytes: 0,
+    downloader: 'chrome',
+  }) as unknown as DownloadTask
+
+describe('setupDownloadRules（DNR 会话规则：Referer 伪造 + Content-Disposition 移除）', () => {
   beforeEach(() => {
     updateRuleCalls.length = 0
-    // 清理上一次调用留下的规则状态
-    // 需要先 remove 再 add
+    vi.clearAllMocks()
   })
 
-  it('adds a rule to remove Content-Disposition header', async () => {
-    await addDownloadRules(
+  it('添加移除 Content-Disposition 响应头的规则', async () => {
+    await setupDownloadRules(makeTask(
       'https://www.85po.com/get_file/3/1eade9eb/21000/21417.mp4',
       'https://www.85po.com/v/21417/ri-o/'
-    )
+    ))
 
-    expect(updateRuleCalls.length).toBeGreaterThanOrEqual(1)
-    const lastCall = updateRuleCalls[updateRuleCalls.length - 1]
-    const removeRule = lastCall.addRules.find(
-      (r: any) =>
-        r.action?.responseHeaders?.some(
-          (h: any) => h.header === 'Content-Disposition' && h.operation === 'remove'
-        )
-    )
-    expect(removeRule).toBeDefined()
+    expect(updateRuleCalls.length).toBe(1)
+    const rule = updateRuleCalls[0].addRules[0]
+    expect(
+      rule.action.responseHeaders.some(
+        (h: any) => h.header === 'Content-Disposition' && h.operation === 'remove'
+      )
+    ).toBe(true)
   })
 
-  it('adds a rule to set Referer header', async () => {
-    await addDownloadRules(
+  it('添加设置 Referer 请求头的规则，值为页面 URL', async () => {
+    await setupDownloadRules(makeTask(
       'https://www.85po.com/get_file/3/1eade9eb/21000/21417.mp4',
       'https://www.85po.com/v/21417/ri-o/'
-    )
+    ))
 
-    const lastCall = updateRuleCalls[updateRuleCalls.length - 1]
-    const refererRule = lastCall.addRules.find(
-      (r: any) =>
-        r.action?.requestHeaders?.some(
-          (h: any) => h.header === 'Referer' && h.operation === 'set'
-        )
-    )
-    expect(refererRule).toBeDefined()
-    expect(refererRule.action.requestHeaders[0].value).toBe('https://www.85po.com/v/21417/ri-o/')
+    const rule = updateRuleCalls[0].addRules[0]
+    expect(
+      rule.action.requestHeaders.some(
+        (h: any) => h.header === 'Referer' && h.operation === 'set'
+      )
+    ).toBe(true)
+    expect(rule.action.requestHeaders[0].value).toBe('https://www.85po.com/v/21417/ri-o/')
   })
 
-  it('uses other resource type for chrome.downloads requests', async () => {
-    await addDownloadRules(
-      'https://www.85po.com/get_file/3/1eade9eb/21000/21417.mp4',
-      'https://www.85po.com/v/21417/ri-o/'
-    )
+  it('规则 ID 为正整数且 resourceTypes 覆盖 chrome.downloads 请求', async () => {
+    await setupDownloadRules(makeTask('https://example.com/video.mp4', 'https://example.com/'))
 
-    const lastCall = updateRuleCalls[updateRuleCalls.length - 1]
-    for (const rule of lastCall.addRules) {
-      expect(rule.condition.resourceTypes).toContain('other')
-    }
+    const rule = updateRuleCalls[0].addRules[0]
+    expect(Number.isInteger(rule.id)).toBe(true)
+    expect(rule.id).toBeGreaterThan(0)
+    expect(rule.condition.resourceTypes).toContain('other')
   })
 
-  it('does not add rules for blob: URLs', async () => {
-    await addDownloadRules('blob:uuid-here', 'https://example.com/')
+  it('blob: URL 不添加任何规则（URL 解析失败被跳过）', async () => {
+    await setupDownloadRules(makeTask('blob:uuid-here', 'https://example.com/'))
 
-    // blob URLs 应该被跳过 — 不应添加任何规则
-    // 无任何 updateSessionRules 调用（因为没有旧规则需要清理，也没有新规则需要添加）
     const addRuleCalls = updateRuleCalls.filter((c: any) => c.addRules?.length > 0)
     expect(addRuleCalls.length).toBe(0)
   })

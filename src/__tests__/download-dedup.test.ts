@@ -22,6 +22,10 @@ vi.stubGlobal('chrome', {
   runtime: {
     sendMessage: vi.fn((msg) => {
       mockSendMessageCalls.push(msg)
+      // Layer 4 (save-helper)：无接收方 → 快速失败，避免降级链悬挂
+      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
+        return Promise.reject(new Error('no receiver'))
+      }
       return Promise.resolve({})
     }),
     onMessage: {
@@ -35,13 +39,15 @@ vi.stubGlobal('chrome', {
   },
 })
 
-// mock storage
+// mock storage（getAllDownloadTasks 会从 storage 重载，get 需镜像 save 的内容）
+const storageState = vi.hoisted(() => ({ tasks: [] as any[] }))
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn((tasks) => {
     mockPersistCalls.push(JSON.parse(JSON.stringify(tasks)))
+    storageState.tasks = JSON.parse(JSON.stringify(tasks))
     return Promise.resolve()
   }),
-  getDownloads: vi.fn(() => Promise.resolve([])),
+  getDownloads: vi.fn(() => Promise.resolve(storageState.tasks)),
 }))
 
 // mock settings
@@ -71,7 +77,7 @@ vi.mock('../utils/sanitize', () => ({
 }))
 
 // 使用动态 import 来应用 mocks
-const { createDownloadTask, getAllDownloadTasks, cancelDownload } = await import(
+const { createDownloadTask, getAllDownloadTasks, cancelDownload, completeDownloadTask, failDownloadTask } = await import(
   '../background/download-manager'
 )
 
@@ -94,6 +100,7 @@ describe('下载去重：同一 URL 不应创建多个任务', () => {
   beforeEach(() => {
     mockSendMessageCalls = []
     mockPersistCalls = []
+    storageState.tasks = []
     vi.clearAllMocks()
   })
 
@@ -124,24 +131,30 @@ describe('下载去重：同一 URL 不应创建多个任务', () => {
     expect(task1.id).not.toBe(task2.id)
   })
 
-  it('正在下载中的任务不应被重复创建', async () => {
+  it('已完成的任务不应被重复创建', async () => {
     const video = makeVideo({ id: 'video_x' })
 
     const task1 = await createDownloadTask(video, 'chrome')
-    // 手动将状态改为 downloading（模拟正在下载）
-    // 通过再次调用 createDownloadTask 验证
+    await completeDownloadTask(task1.id)
+
     const task2 = await createDownloadTask(video, 'chrome')
 
     expect(task2.id).toBe(task1.id)
   })
 
-  it('已完成的任务不应被重复创建', async () => {
+  it('已失败的任务允许重新创建（重试路径）', async () => {
     const video = makeVideo({ id: 'video_y' })
 
     const task1 = await createDownloadTask(video, 'chrome')
-    // 即使任务已完成（通过 mock 来模拟）
+    await failDownloadTask(task1.id, 'boom')
+
     const task2 = await createDownloadTask(video, 'chrome')
 
-    expect(task2.id).toBe(task1.id)
+    // 失败任务不参与去重：应创建新任务，且旧任务保留在队列中
+    expect(task2.id).not.toBe(task1.id)
+    const all = await getAllDownloadTasks()
+    const ids = all.map((t) => t.id)
+    expect(ids).toContain(task1.id)
+    expect(ids).toContain(task2.id)
   })
 })

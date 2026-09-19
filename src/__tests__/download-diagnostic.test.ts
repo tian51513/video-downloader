@@ -1,63 +1,111 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { DetectedVideo } from '../types'
 
 /**
- * 测试：诊断消息格式
+ * 测试：失败与取消的任务语义（真实模块行为）
  *
- * 当 downloadViaPageContext 失败时，MAIN world 应通过 postMessage 发送
- * PAGE_FETCH_ERROR 消息，ISOLATED world content script 转发到 background。
- *
- * 测试验证消息格式，确保 background 能正确解析错误信息。
+ * 核心行为：
+ * 1. failDownloadTask：任务置 failed 并保留具体错误信息（来自页面/save-helper 的诊断）
+ * 2. cancelDownload：任务置 failed 且错误为"已取消"（用户主动取消）
+ * 3. PAGE_FETCH_ERROR / SAVE_HELPER_DONE 失败路径应使用 failDownloadTask 而非 cancelDownload
  */
 
-describe('诊断消息格式', () => {
-  it('PAGE_FETCH_ERROR 消息应包含 taskId、stage 和 error 字段', () => {
-    // 模拟 MAIN world 发送的 postMessage 数据
-    const message = {
-      type: 'PAGE_FETCH_ERROR',
-      payload: {
-        taskId: 'dl_test123',
-        stage: 'fetch',
-        error: 'TypeError: Failed to fetch',
-        url: 'https://www.85po.com/video.mp4',
-      },
-    }
+vi.stubGlobal('chrome', {
+  runtime: {
+    sendMessage: vi.fn((msg: any) => {
+      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
+        return Promise.reject(new Error('no receiver'))
+      }
+      return Promise.resolve({})
+    }),
+    onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+  },
+  downloads: {
+    onDeterminingFilename: { addListener: vi.fn() },
+  },
+  tabs: { query: vi.fn(() => Promise.resolve([])) },
+  declarativeNetRequest: { updateSessionRules: vi.fn(() => Promise.resolve()) },
+})
 
-    expect(message.type).toBe('PAGE_FETCH_ERROR')
-    expect(message.payload.taskId).toBe('dl_test123')
-    expect(message.payload.stage).toBe('fetch')
-    expect(message.payload.error).toContain('Failed to fetch')
-    expect(message.payload.url).toBe('https://www.85po.com/video.mp4')
+// mock storage（getAllDownloadTasks 会从 storage 重载，get 需镜像 save 的内容）
+const storageState = vi.hoisted(() => ({ tasks: [] as any[] }))
+vi.mock('../utils/storage', () => ({
+  saveDownloads: vi.fn((tasks: any[]) => {
+    storageState.tasks = JSON.parse(JSON.stringify(tasks))
+    return Promise.resolve()
+  }),
+  getDownloads: vi.fn(() => Promise.resolve(storageState.tasks)),
+}))
+
+vi.mock('../background/settings', () => ({
+  getFullSettings: vi.fn(() =>
+    Promise.resolve({ downloadSettings: { maxConcurrent: 3, askSaveLocation: false } })
+  ),
+  initDefaultSettings: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('../utils/offscreen-blob', () => ({
+  fetchAndDownload: vi.fn(),
+  ensureOffscreen: vi.fn(),
+}))
+
+vi.mock('../background/hls-downloader', () => ({
+  downloadHls: vi.fn(),
+}))
+
+vi.mock('../utils/sanitize', () => ({
+  sanitizeName: vi.fn((s: string) => s),
+}))
+
+const { createDownloadTask, failDownloadTask, cancelDownload, getAllDownloadTasks } = await import(
+  '../background/download-manager'
+)
+
+const makeVideo = (): DetectedVideo => ({
+  id: 'v_' + Math.random().toString(36).slice(2, 8),
+  url: `https://example.com/video-${Math.random().toString(36).slice(2, 6)}.mp4`,
+  title: 'Test Video',
+  format: 'mp4',
+  mimeType: 'video/mp4',
+  source: 'network',
+  pageUrl: 'https://example.com/',
+  domain: 'example.com',
+  detectedAt: Date.now(),
+})
+
+describe('失败与取消的任务语义', () => {
+  beforeEach(() => {
+    storageState.tasks = []
+    vi.clearAllMocks()
   })
 
-  it('ISOLATED world 应能正确转发 MAIN world 的错误消息到 background', () => {
-    // 模拟 window.postMessage 事件
-    const mainWorldMessage = {
-      type: 'PAGE_FETCH_ERROR',
-      payload: {
-        taskId: 'dl_test456',
-        stage: 'execute',
-        error: '找不到标签页',
-        url: 'https://www.85po.com/v/21417/ri-o/',
-      },
-    }
+  it('failDownloadTask 置 failed 并保留诊断错误信息', async () => {
+    const task = await createDownloadTask(makeVideo(), 'chrome')
 
-    // ISOLATED world 收到 postMessage 后，应转发为 chrome.runtime.sendMessage
-    const expectedRuntimeMessage = {
-      type: 'PAGE_FETCH_ERROR',
-      payload: mainWorldMessage.payload,
-    }
+    await failDownloadTask(task.id, 'TypeError: Failed to fetch')
 
-    expect(expectedRuntimeMessage.type).toBe('PAGE_FETCH_ERROR')
-    expect(expectedRuntimeMessage.payload.taskId).toBe('dl_test456')
-    expect(expectedRuntimeMessage.payload.stage).toBe('execute')
+    const stored = (await getAllDownloadTasks()).find((t) => t.id === task.id)
+    expect(stored?.status).toBe('failed')
+    expect(stored?.error).toBe('TypeError: Failed to fetch')
   })
 
-  it('stage 字段应为 fetch/execute/blob 三种值之一', () => {
-    const validStages = ['fetch', 'execute', 'blob']
-    const stages = ['fetch', 'execute', 'blob']
+  it('failDownloadTask 无错误信息时使用默认文案', async () => {
+    const task = await createDownloadTask(makeVideo(), 'chrome')
 
-    for (const stage of stages) {
-      expect(validStages).toContain(stage)
-    }
+    await failDownloadTask(task.id)
+
+    const stored = (await getAllDownloadTasks()).find((t) => t.id === task.id)
+    expect(stored?.status).toBe('failed')
+    expect(stored?.error).toBe('下载失败')
+  })
+
+  it('cancelDownload 置 failed 且错误为"已取消"', async () => {
+    const task = await createDownloadTask(makeVideo(), 'chrome')
+
+    await cancelDownload(task.id)
+
+    const stored = (await getAllDownloadTasks()).find((t) => t.id === task.id)
+    expect(stored?.status).toBe('failed')
+    expect(stored?.error).toBe('已取消')
   })
 })

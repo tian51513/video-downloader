@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { DetectedVideo } from '../types'
 
 /**
  * 测试：下载进度应单调递增
@@ -15,6 +16,10 @@ vi.stubGlobal('chrome', {
   runtime: {
     sendMessage: vi.fn((msg) => {
       mockBroadcastCalls.push(msg)
+      // Layer 4 (save-helper)：无接收方 → 快速失败，避免测试进程挂起
+      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
+        return Promise.reject(new Error('no receiver'))
+      }
       return Promise.resolve({})
     }),
     onMessage: {
@@ -62,7 +67,7 @@ describe('下载进度单调性', () => {
   })
 
   it('进度报告不应导致进度倒退', async () => {
-    const video = {
+    const video: DetectedVideo = {
       id: 'test_video',
       url: 'https://example.com/video.mp4',
       title: 'Test Video',
@@ -93,7 +98,7 @@ describe('下载进度单调性', () => {
   })
 
   it('更高进度应正常更新', async () => {
-    const video = {
+    const video: DetectedVideo = {
       id: 'test_video_2',
       url: 'https://example.com/video2.mp4',
       title: 'Test Video 2',
@@ -119,7 +124,7 @@ describe('下载进度单调性', () => {
   })
 
   it('相同进度值应正常通过', async () => {
-    const video = {
+    const video: DetectedVideo = {
       id: 'test_video_3',
       url: 'https://example.com/video3.mp4',
       title: 'Test Video 3',
@@ -143,5 +148,35 @@ describe('下载进度单调性', () => {
 
     expect(lastUpdate.progress).toBe(50)
     expect(lastUpdate.speed).toBe(600) // speed 应更新
+  })
+
+  it('缺失字段（undefined/NaN）不应抹掉已有进度', async () => {
+    const video: DetectedVideo = {
+      id: 'test_video_4',
+      url: 'https://example.com/video4.mp4',
+      title: 'Test Video 4',
+      format: 'mp4',
+      mimeType: 'video/mp4',
+      source: 'network',
+      pageUrl: 'https://example.com/',
+      domain: 'example.com',
+      detectedAt: Date.now(),
+    }
+
+    const task = await createDownloadTask(video, 'chrome')
+
+    updateTaskProgressFromPage(task.id, 40, 100, 4000000, 10000000)
+    // 某些来源只上报 loaded/total，progress 换算不出 → undefined
+    updateTaskProgressFromPage(task.id, undefined as any, 120, 4500000, 10000000)
+
+    const progressUpdates = mockBroadcastCalls.filter(
+      (m) => m.type === 'DOWNLOAD_PROGRESS'
+    )
+    const lastUpdate = progressUpdates[progressUpdates.length - 1]?.payload
+
+    // progress 不被 undefined 覆盖；其他有限数值字段正常更新
+    expect(lastUpdate.progress).toBe(40)
+    expect(lastUpdate.speed).toBe(120)
+    expect(lastUpdate.downloadedBytes).toBe(4500000)
   })
 })
