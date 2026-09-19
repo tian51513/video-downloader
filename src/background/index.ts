@@ -1,11 +1,11 @@
 import { initDefaultSettings } from '../utils/storage'
 import {
   createDownloadTask,
+  processQueue,
   pauseDownload,
   cancelDownload,
   retryDownload,
   getAllDownloadTasks,
-  updateTaskChromeDownloadId,
   updateTaskProgressFromPage,
   completeDownloadTask,
   failDownloadTask,
@@ -106,19 +106,15 @@ async function updateGlobalBadge(): Promise<void> {
 }
 
 // ===== Keepalive alarm (防止 Service Worker 被终止) =====
+// 周期性唤醒以在活跃下载期间延长 SW 生命周期；唤醒后顺手驱动一次队列，
+// 可以接回 SW 被杀时卡在 pending 的任务。
+// （旧实现给自身发 GET_DOWNLOADS 再检查响应——onMessage 收不到自己发出的
+// 消息，该检查恒为空操作，已移除。）
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 })
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'keepalive') {
-    // 只在有活跃下载时才保活
-    chrome.runtime.sendMessage({ type: 'GET_DOWNLOADS' }, (response) => {
-      if (chrome.runtime.lastError) return
-      const tasks = response?.tasks as any[] || []
-      const hasActive = tasks.some((t) => t.status === 'downloading' || t.status === 'merging')
-      if (!hasActive) {
-        // 无活跃下载时不续约 alarm，让 SW 自然休眠
-      }
-    })
+    void processQueue()
   }
 })
 
@@ -212,7 +208,7 @@ chrome.runtime.onMessage.addListener(
   }
 )
 
-async function handleMessage(
+export async function handleMessage(
   message: ExtensionMessage,
   _sender: chrome.runtime.MessageSender
 ): Promise<any> {
@@ -376,13 +372,6 @@ async function handleMessage(
       const { taskId, loaded, total, speed } = message.payload
       const progress = total > 0 ? (loaded / total) * 100 : undefined
       await updateTaskProgressFromPage(taskId, progress, speed, loaded, total)
-      return { success: true }
-    }
-
-    // ===== chrome.downloads.onDeterminingFilename 回调 =====
-    case 'CHROME_DOWNLOAD_ID': {
-      const { taskId, chromeDownloadId } = message.payload
-      await updateTaskChromeDownloadId(taskId, chromeDownloadId)
       return { success: true }
     }
 

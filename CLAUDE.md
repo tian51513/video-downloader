@@ -183,13 +183,10 @@ assets/
 | CLEAR_PAGE_DOWNLOADS | ui→bg | 清除指定页面的下载 |
 | SAVE_HELPER_DONE | save-helper→bg | 保存完成，关闭辅助页 |
 | SAVE_HELPER_PROGRESS | save-helper→bg | save-helper fetch 下载进度 |
-| SAVE_HELPER_DOWNLOAD | bg→save-helper | save-helper 保存任务 |
 | SAVE_HELPER_FETCH_DOWNLOAD | bg→save-helper | save-helper fetch 下载任务 |
-| CREATE_OFFSCREEN_BLOB | bg→offscreen | 创建 Offscreen Document Blob URL |
 | PAGE_FETCH_PROGRESS | page→bg | 页面 MAIN world fetch 下载进度 |
 | PAGE_FETCH_ERROR | page→bg | 页面 fetch 诊断错误 |
 | PAGE_DOWNLOAD_DONE | page→bg | 页面下载完成通知 |
-| CHROME_DOWNLOAD_ID | page→bg | 报告 chrome.downloads 下载 ID |
 | RESCAN_ALL_TABS | ui→bg | 重新扫描所有标签页 |
 | CLEAR_VIDEOS_BY_URLS | ui→bg | 按URL清除检测到的视频 |
 | CLEAR_ORPHANED_VIDEOS | ui→bg | 清除孤立视频 (页面已关闭) |

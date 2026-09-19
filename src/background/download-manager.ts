@@ -247,7 +247,7 @@ async function refreshTitleFromPage(video: DetectedVideo): Promise<string> {
 
 // ===== 队列处理 =====
 
-async function processQueue(): Promise<void> {
+export async function processQueue(): Promise<void> {
   if (isProcessing) return
   isProcessing = true
 

@@ -49,6 +49,7 @@ export function createChromeMock(options: ChromeMockOptions = {}) {
         return Promise.resolve({})
       }),
       onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      onInstalled: { addListener: vi.fn() },
       getViews: vi.fn(() => []),
       getURL: vi.fn((path: string) => `chrome-extension://fake-id/${path}`),
       lastError: undefined,
@@ -58,6 +59,8 @@ export function createChromeMock(options: ChromeMockOptions = {}) {
       get: vi.fn(() =>
         Promise.resolve({ id: 1, url: 'https://www.85po.com/v/21417/ri-o/' })
       ),
+      onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+      onActivated: { addListener: vi.fn(), removeListener: vi.fn() },
       sendMessage: vi.fn((tabId: number, message: any) => {
         if (options.tabsSendMessage) return options.tabsSendMessage(tabId, message)
         return Promise.resolve(undefined)
@@ -84,6 +87,20 @@ export function createChromeMock(options: ChromeMockOptions = {}) {
     alarms: {
       create: vi.fn(),
       onAlarm: { addListener: vi.fn() },
+    },
+    contextMenus: {
+      removeAll: vi.fn((cb?: () => void) => cb?.()),
+      create: vi.fn(),
+      onClicked: { addListener: vi.fn() },
+    },
+    action: {
+      setBadgeText: vi.fn(),
+      setBadgeBackgroundColor: vi.fn(),
+      onClicked: { addListener: vi.fn() },
+    },
+    sidePanel: {
+      open: vi.fn(() => Promise.resolve()),
+      setOptions: vi.fn(() => Promise.resolve()),
     },
   }
 
