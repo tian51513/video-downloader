@@ -29,6 +29,10 @@ Chrome MV3 扩展，自动检测网页中的视频/音频资源并下载。
    pnpm build
    ```
 
+> **Windows 前置**：PowerShell 默认禁止运行 `pnpm.ps1`，首次使用先执行一次
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`（仅影响当前用户、
+> 无需管理员），否则 `pnpm` 报"禁止运行脚本"。
+
 2. 打开 Chrome，进入 `chrome://extensions`
 3. 开启右上角 **开发者模式**
 4. 点击 **加载已解压的扩展程序**
@@ -46,9 +50,11 @@ node scripts/postbuild.mjs chrome-mv3-dev
 然后在 `chrome://extensions` 加载 `build/chrome-mv3-dev/` 目录。
 
 > **WSL + Windows 混用警告**：本仓库位于 Windows 盘（`F:\`），WSL 和 Windows
-> 的 node_modules 布局互不兼容（pnpm 符号链接 vs junction）。**固定在一侧**
-> 执行所有 `pnpm` / `node` 命令；若曾在另一侧安装过，先删除 `node_modules`
-> 再在本侧重新 `pnpm install`。
+> 的 node_modules 布局互不兼容（pnpm 符号链接 vs junction），且 esbuild 含
+> 平台原生二进制——装错一侧时 `pnpm build` / `postbuild` 会报 "installed
+> esbuild for another platform"。**固定在一侧**执行所有 `pnpm` / `node`
+> 命令（本仓库主环境为 Windows PowerShell）；若曾在另一侧安装过，先删除
+> `node_modules` 再在本侧重新 `pnpm install`。
 
 ## 使用
 

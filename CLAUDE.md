@@ -25,6 +25,11 @@ pnpm test:watch   # 测试监视模式
 
 构建后处理由 `scripts/postbuild.mjs` 完成：① 将 `assets/` 下的静态文件（offscreen.html/js, save-helper.html/js）复制到 `build/chrome-mv3-prod/`；② 用 esbuild 将 `src/injector-entry.ts` 打包为自包含 IIFE `build/chrome-mv3-prod/injector.js`（MAIN world 注入产物，见"关键注意事项"）。注意 `pnpm dev` 不经过此脚本（已知缺口，dev 下需手动执行一次 `node scripts/postbuild.mjs chrome-mv3-dev`）。
 
+> **平台规则**：node_modules 只能服务安装它的那一侧（pnpm 链接布局与 esbuild
+> 原生二进制均为平台绑定）。本仓库主环境为 **Windows PowerShell**（首次使用需
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`）；WSL 侧不得执行
+> `pnpm install`/`pnpm build`，否则会破坏另一侧的构建能力。
+
 ## 项目架构
 
 ```
