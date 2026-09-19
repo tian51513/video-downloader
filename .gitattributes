@@ -1,0 +1,12 @@
+# 统一换行符：仓库与工作区均为 LF（消除 WSL2/Windows 挂载导致的 CRLF 幻影 diff）
+* text=auto eol=lf
+
+# 二进制文件不做任何转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
