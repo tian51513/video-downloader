@@ -8,6 +8,7 @@ import { getFullSettings } from './settings'
 import { sanitizeName } from '../utils/sanitize'
 import { looksLikeFallback, cleanSiteTitleSuffix, extractNameFromUrl } from './title-utils'
 import { getDirectoryHandle, DOWNLOAD_DIR } from '../utils/directory-handle'
+import { idbPut } from '../utils/idb'
 import {
   parseM3u8,
   selectVariant,
@@ -362,50 +363,10 @@ function concatUint8Arrays(arrays: Uint8Array[]): ArrayBuffer {
   return result.buffer
 }
 
-// ===== IndexedDB 工具函数 =====
+// ===== IndexedDB 写入（HLS 数据太大不能走消息，先落盘再由 save-helper 页面取走） =====
 
 function writeToSaveDB(key: string, data: ArrayBuffer): Promise<void> {
-  return ensureSaveDB().then(db => {
-    return new Promise<void>((resolve, reject) => {
-      try {
-        const tx = db.transaction(SAVE_STORE_NAME, 'readwrite')
-        tx.objectStore(SAVE_STORE_NAME).put(data, key)
-        tx.oncomplete = () => { db.close(); resolve() }
-        tx.onerror = () => { db.close(); reject(tx.error) }
-      } catch (e) {
-        db.close()
-        reject(e)
-      }
-    })
-  })
-}
-
-function ensureSaveDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(SAVE_DB_NAME)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(SAVE_STORE_NAME)) {
-        db.createObjectStore(SAVE_STORE_NAME)
-      }
-    }
-    req.onsuccess = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(SAVE_STORE_NAME)) {
-        db.close()
-        const ver = db.version + 1
-        const req2 = indexedDB.open(SAVE_DB_NAME, ver)
-        req2.onupgradeneeded = () => {
-          req2.result.createObjectStore(SAVE_STORE_NAME)
-        }
-        req2.onsuccess = () => resolve(req2.result)
-        req2.onerror = () => reject(req2.error)
-        return
-      }
-      resolve(db)
-    }
-    req.onerror = () => reject(req.error)
-  })
+  return idbPut(SAVE_DB_NAME, SAVE_STORE_NAME, key, data)
 }
 
 // ===== 分片下载 =====

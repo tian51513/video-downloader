@@ -4,6 +4,8 @@
  * 存储到 IndexedDB 中，供 background service worker 下载时直接写入文件。
  */
 
+import { idbGet, idbPut, idbDelete } from './idb'
+
 const DB_NAME = 'video-downloader'
 const STORE_NAME = 'handles'
 const DOWNLOAD_DIR_KEY = 'download-directory'
@@ -14,64 +16,22 @@ export interface DirectoryHandleInfo {
   key: string
 }
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME)
-      }
-    }
-    request.onsuccess = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.close()
-        const req2 = indexedDB.open(DB_NAME, db.version + 1)
-        req2.onupgradeneeded = () => { req2.result.createObjectStore(STORE_NAME) }
-        req2.onsuccess = () => resolve(req2.result)
-        req2.onerror = () => reject(req2.error)
-        return
-      }
-      resolve(db)
-    }
-    request.onerror = () => reject(request.error)
-  })
-}
-
 export async function saveDirectoryHandle(
   key: string,
   handle: FileSystemDirectoryHandle
 ): Promise<string> {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    tx.objectStore(STORE_NAME).put(handle, key)
-    tx.oncomplete = () => resolve(handle.name)
-    tx.onerror = () => reject(tx.error)
-  })
+  await idbPut(DB_NAME, STORE_NAME, key, handle)
+  return handle.name
 }
 
 export async function getDirectoryHandle(
   key: string
 ): Promise<FileSystemDirectoryHandle | null> {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const request = tx.objectStore(STORE_NAME).get(key)
-    request.onsuccess = () => resolve(request.result || null)
-    request.onerror = () => reject(request.error)
-  })
+  return idbGet<FileSystemDirectoryHandle>(DB_NAME, STORE_NAME, key)
 }
 
 export async function removeDirectoryHandle(key: string): Promise<void> {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    tx.objectStore(STORE_NAME).delete(key)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
+  await idbDelete(DB_NAME, STORE_NAME, key)
 }
 
 export async function getDirectoryInfo(

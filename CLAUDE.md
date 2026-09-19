@@ -243,8 +243,8 @@ host_permissions: `<all_urls>`
 - 内容脚本为单路径架构: `src/utils/injector-script.ts` (MAIN world 注入) + `src/contents/detector.ts` (ISOLATED world 中转)。Plasmo 0.90 不收集 `src/content/index.ts` 目录形态的 CS 入口（只认 `src/content.ts` 平铺或 `src/contents/` 目录），不要重建该目录
 - `injector-script.ts` 不能使用 import/export，必须自包含 (供 `chrome.scripting.executeScript` 注入)
 - `injector-script.ts` 中报告视频使用 `window.postMessage` (不能直接使用 `chrome.runtime`)
-- IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在
-- `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch
+- IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在——TS 侧统一走 `src/utils/idb.ts`（含此陷阱与升版本补建逻辑），不要再手写 open/upgrade 样板
+- `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch（`utils/idb.ts` 已统一处理）
 - 目录句柄 (File System Access API) 在浏览器重启后权限可能失效，需重新验证
 - `startChromeNativeDownload` 必须提取为独立函数，避免 ESBuild minifier 去掉分号导致 ASI (Automatic Semicolon Insertion) 问题
 - Tab 导航 (`tabs.onUpdated` loading + complete) 时自动重新注入 MAIN world 脚本
