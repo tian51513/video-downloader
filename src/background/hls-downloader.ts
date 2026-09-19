@@ -35,10 +35,19 @@ export async function downloadHls(
   const referrer = task.video.pageUrl || ''
   console.log(`[HLS] 开始下载: ${task.video.title || task.id}, URL: ${task.video.url}, referrer: ${referrer}`)
 
-  const m3u8Response = await fetchWithTimeout(task.video.url, signal, timeout, referrer)
+  // 存量防御：旧检测层可能上报相对 URL（页面 fetch 的原始参数），
+  // SW 中无基准地址无法 fetch——相对 pageUrl 解析为绝对地址
+  let requestUrl = task.video.url
+  if (task.video.pageUrl) {
+    try {
+      requestUrl = new URL(task.video.url, task.video.pageUrl).href
+    } catch { /* 保留原样 */ }
+  }
+
+  const m3u8Response = await fetchWithTimeout(requestUrl, signal, timeout, referrer)
   const m3u8Text = await m3u8Response.text()
 
-  let playlist = parseM3u8(m3u8Text, task.video.url)
+  let playlist = parseM3u8(m3u8Text, requestUrl)
   console.log(`[HLS] m3u8 解析完成, 类型: ${playlist.type}`)
 
   // 如果是主播放列表，跟随最高码率变体

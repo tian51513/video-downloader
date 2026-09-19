@@ -15,7 +15,7 @@ import {
   parseM3u8MediaDuration,
   estimateFileSize,
 } from '../shared/hls-sniff'
-import { detectFormatFromUrl, isMediaRequest } from '../shared/media-detect'
+import { detectFormatFromUrl, isMediaRequest, normalizeReportUrl } from '../shared/media-detect'
 
 export function injectorMain(): void {
   'use strict'
@@ -30,6 +30,9 @@ export function injectorMain(): void {
    * - media playlist: 报告单个视频（带 duration）
    */
   function reportHlsFromContent(url: string, content: string, contentType: string): void {
+    // 网络钩子捕获的是页面调用时的原始参数——相对路径必须先解析为绝对地址，
+    // 否则既无法作为 master→变体解析的 baseUrl，也无法在 SW 中 fetch
+    url = normalizeReportUrl(url, window.location.href)
     // 在 iframe 中运行时，使用父页面 URL 作为 pageUrl，以便后台正确获取页面标题
     const iframeCtx = getIframeParentContext()
     const isInIframe = !!iframeCtx
@@ -351,6 +354,8 @@ export function injectorMain(): void {
     url: string, format: string, contentType: string, source: string,
     width?: number, height?: number, duration?: number, size?: number
   ): void {
+    // 所有上报的汇聚咽喉：统一把相对 URL 解析为绝对地址（去重也按绝对地址）
+    url = normalizeReportUrl(url, window.location.href)
     if (reportedUrls[url]) return
     reportedUrls[url] = true
     if (url.length < 10) return

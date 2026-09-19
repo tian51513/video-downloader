@@ -48,3 +48,17 @@ export function isMediaRequest(url: string, contentType?: string): boolean {
     (contentType ? detectFormatFromContentType(contentType) !== null : false)
   )
 }
+
+/**
+ * 将页面内捕获的 URL（页面 fetch/XHR 的原始参数可能是相对路径，
+ * 如 '480p/index.m3u8?n=...'）解析为绝对地址。
+ * 无法解析时原样返回。相对 URL 若不解析直接上报，background SW
+ * 中的 fetch 将因缺少基准地址而失败（TypeError: Failed to fetch）。
+ */
+export function normalizeReportUrl(url: string, pageUrl: string): string {
+  try {
+    return new URL(url, pageUrl).href
+  } catch {
+    return url
+  }
+}

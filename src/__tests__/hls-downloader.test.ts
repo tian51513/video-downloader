@@ -284,4 +284,30 @@ hi.m3u8
     const saved = await idbGet<ArrayBuffer>('vd-pending-saves', 'pending-saves', key)
     expect(new Uint8Array(saved!)).toEqual(concat(INIT, seg(1), seg(2)))
   })
+
+  it('相对 URL（页面 fetch 的原始参数）→ 相对 pageUrl 解析后下载成功', async () => {
+    // 复现 huangguo.video 缺陷：检测层上报了 '480p/index.m3u8?n=...' 相对地址
+    const resolved = 'https://huangguo.video/video/480p/index.m3u8?n=abc123'
+    files.map.set(resolved, MEDIA_PLAYLIST('init.mp4'))
+    files.map.set('https://huangguo.video/video/480p/init.mp4', INIT)
+    files.map.set('https://huangguo.video/video/480p/seg1.m4s', seg(1))
+    files.map.set('https://huangguo.video/video/480p/seg2.m4s', seg(2))
+
+    const dir = fakeDirHandle()
+    dirState.handle = dir.handle
+
+    const task = makeTask({
+      url: '480p/index.m3u8?n=abc123',
+      pageUrl: 'https://huangguo.video/video/foqxppym',
+      title: '母女日常 · 第1集',
+    })
+    const result = await downloadHls(task, new AbortController().signal, 3, vi.fn(), vi.fn())
+
+    // 解析后的绝对地址被真正请求
+    const fetched = fetchMock.mock.calls.map((c: any[]) => String(c[0]))
+    expect(fetched).toContain(resolved)
+    // 相对 URL 不能原样进入 fetch
+    expect(fetched).not.toContain('480p/index.m3u8?n=abc123')
+    expect(dir.written[0].data).toEqual(concat(INIT, seg(1), seg(2)))
+  })
 })
