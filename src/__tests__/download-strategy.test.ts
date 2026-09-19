@@ -62,6 +62,7 @@ vi.mock('../background/settings', () => ({
   getFullSettings: vi.fn(() =>
     Promise.resolve({
       downloadSettings: { maxConcurrent: 3, askSaveLocation: false },
+      externalDownloaderConfig: { aria2RpcUrl: 'http://localhost:6800/jsonrpc' },
     })
   ),
   initDefaultSettings: vi.fn(() => Promise.resolve()),
@@ -136,6 +137,25 @@ describe('下载策略分发', () => {
     await flush()
 
     expect(downloadHls).toHaveBeenCalledTimes(1)
+    expect(downloadCalls.length).toBe(0)
+  })
+
+  it('aria2 下载器 → JSON-RPC aria2.addUri，不经由 chrome.downloads', async () => {
+    const fetchMock = vi.fn((_url: string | URL | RequestInfo, _init?: RequestInit) =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ result: 'gid_123' }) })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const video = makeVideo({ url: 'https://example.com/external.mp4' })
+    await createDownloadTask(video, 'aria2')
+    await flush()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [rpcUrl, init] = fetchMock.mock.calls[0]
+    expect(rpcUrl).toBe('http://localhost:6800/jsonrpc')
+    const body = JSON.parse(String(init?.body))
+    expect(body.method).toBe('aria2.addUri')
+    expect(body.params[0]).toEqual(['https://example.com/external.mp4'])
     expect(downloadCalls.length).toBe(0)
   })
 })

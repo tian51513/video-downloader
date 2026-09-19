@@ -47,16 +47,8 @@ src/
 │   ├── hls-downloader.ts    # HLS 下载编排 (m3u8→分片下载→解密→mux.js转封装→保存)
 │   ├── hls-parser.ts        # m3u8 解析 (master/media playlist, #EXT-X-MAP, #EXT-X-KEY)
 │   └── settings.ts          # 设置读写 (chrome.storage)
-├── content/             # Content Script — MAIN world (Plasmo CS, 主要检测路径)
-│   ├── index.ts              # 入口 (PlasmoCSConfig: MAIN world, run_at: document_start)
-│   ├── network-interceptor.ts  # Hook XHR/Fetch，检测视频/音频请求
-│   ├── dom-observer.ts        # MutationObserver 扫描 DOM video/source/iframe
-│   ├── blob-handler.ts        # Hook URL.createObjectURL 捕获 Blob URL
-│   ├── hls-parser.ts          # MAIN world 内联 m3u8 解析
-│   ├── dash-parser.ts         # DASH MPD 解析
-│   └── name-detector.ts       # 视频标题检测 (title/og:title/h1/附近文本)
-├── contents/            # Content Script — ISOLATED world (Plasmo CS, 消息中转)
-│   └── detector.ts      # 接收 injector-script postMessage，转发下载进度/错误，处理 DETECT_NOW 重扫描
+├── contents/            # Content Script — ISOLATED world (Plasmo CS, 消息中转/检测缓存)
+│   └── detector.ts      # 接收 injector-script postMessage，黑名单过滤/去重/元数据更新，转发下载进度/错误，处理 DETECT_NOW 重扫描
 ├── popup/               # 弹出窗口 UI
 │   ├── index.tsx
 │   └── components/
@@ -108,37 +100,22 @@ assets/
 
 ## 核心通信流程
 
-### 视频检测 — 双路径架构
+### 视频检测 — 单路径架构（injector + detector）
 
-**路径 A (主路径): Plasmo MAIN world Content Script**
+> 历史：曾有"双路径"（src/content/ Plasmo CS 主路径 + injector 辅助路径），但 Plasmo 0.90 只收集 `src/content.ts` 平铺入口或 `src/contents/` 目录，`src/content/index.ts` 从未进入构建产物——该目录已于 2026-09 删除。
+
 ```
-[src/content/index.ts] Plasmo CS (MAIN world, run_at: document_start)
-  ├── network-interceptor.ts: Hook XHR/Fetch
-  ├── dom-observer.ts: MutationObserver 扫描 DOM
-  ├── blob-handler.ts: Hook URL.createObjectURL
-  ├── hls-parser.ts: 内联 m3u8 解析
-  ├── dash-parser.ts: DASH MPD 解析
-  └── name-detector.ts: 标题检测
-       ↓ chrome.runtime.sendMessage (VIDEO_DETECTED) — 直接发送
-       ↓ 黑名单过滤在 content/index.ts 内完成
+[src/utils/injector-script.ts] chrome.scripting.executeScript({ world: 'MAIN' })
+  (Hook XHR/Fetch/Blob, 内联 m3u8/DASH 解析, DOM/iframe/JS 变量扫描, 标题检测, 音频格式检测)
+       ↓ window.postMessage (VIDEO_DOWNLOADER_DETECT / PAGE_FETCH_* / PAGE_DOWNLOAD_DONE)
+[src/contents/detector.ts] Plasmo CS (ISOLATED world, all_frames)
+  (黑名单过滤、去重、元数据更新、转发下载进度/错误、处理 DETECT_NOW 重扫描)
+       ↓ chrome.runtime.sendMessage (VIDEO_DETECTED / PAGE_FETCH_* / PAGE_DOWNLOAD_DONE)
 [Service Worker] background/index.ts
   (补充缺失文件大小, 保存到 storage, 更新 badge, 广播到 UI)
        ↓ chrome.runtime.sendMessage (VIDEO_DETECTED)
 [Popup/SidePanel] UI 组件
 ```
-
-**路径 B (辅助路径): 注入式 MAIN world 脚本**
-```
-[src/utils/injector-script.ts] chrome.scripting.executeScript({ world: 'MAIN' })
-  (独立 Hook XHR/Fetch/Blob, 内联 m3u8 解析, 页面内 fetch 下载)
-       ↓ window.postMessage (VIDEO_DOWNLOADER_DETECT)
-[src/contents/detector.ts] Plasmo CS (ISOLATED world)
-  (黑名单过滤、去重、元数据更新、转发下载进度/错误)
-       ↓ chrome.runtime.sendMessage (VIDEO_DETECTED / PAGE_FETCH_* / PAGE_DOWNLOAD_DONE)
-[Service Worker] background/index.ts
-```
-
-> 路径 A 是主要检测路径，由 Plasmo 自动注入。路径 B 由 background 在 tab 导航时手动注入，作为兼容层并用于页面内 fetch 下载 (Layer 3 降级)。
 
 ### 下载流程 (常规视频 — 多层级降级)
 ```
@@ -263,10 +240,9 @@ host_permissions: `<all_urls>`
 - `assets/` 下的 HTML/JS 文件不经过 TypeScript 编译，必须使用纯 JavaScript（不能有类型注解）
 - Service Worker 无 DOM，Blob URL 不可用；通过 Offscreen Document 或 save-helper 页面创建
 - Service Worker 会被 Chrome 自动终止；使用 `chrome.alarms` (25s 间隔) 保活活跃下载
-- 内容脚本采用双路径架构: `src/content/` (Plasmo MAIN world) 为主路径，`src/utils/injector-script.ts` + `src/contents/detector.ts` (ISOLATED world) 为辅助路径
+- 内容脚本为单路径架构: `src/utils/injector-script.ts` (MAIN world 注入) + `src/contents/detector.ts` (ISOLATED world 中转)。Plasmo 0.90 不收集 `src/content/index.ts` 目录形态的 CS 入口（只认 `src/content.ts` 平铺或 `src/contents/` 目录），不要重建该目录
 - `injector-script.ts` 不能使用 import/export，必须自包含 (供 `chrome.scripting.executeScript` 注入)
 - `injector-script.ts` 中报告视频使用 `window.postMessage` (不能直接使用 `chrome.runtime`)
-- `src/content/` (Plasmo MAIN world) 可以直接使用 `chrome.runtime.sendMessage`
 - IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在
 - `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch
 - 目录句柄 (File System Access API) 在浏览器重启后权限可能失效，需重新验证

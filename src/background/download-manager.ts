@@ -270,21 +270,13 @@ async function processQueue(): Promise<void> {
       const isHls = next.video.format === 'hls'
       updateTaskStatus(next.id, 'downloading')
 
-      if (isHls) {
-        // HLS 下载：fire-and-forget，不阻塞队列，允许并发下载多个 HLS 视频
-        activeDownloads.set(next.id, { isHls: true })
-        downloadWithChrome(next, settings).catch((error: any) => {
-          activeDownloads.delete(next.id)
-          updateTaskStatus(next.id, 'failed', error.message)
-        })
-      } else {
-        // chrome.downloads / aria2 / idm：fire-and-forget，不阻塞队列
-        activeDownloads.set(next.id, { isHls: false })
-        downloadWithChrome(next, settings).catch((error: any) => {
-          activeDownloads.delete(next.id)
-          updateTaskStatus(next.id, 'failed', error.message)
-        })
-      }
+      // 统一 fire-and-forget：HLS 占并发槽（见上方 hlsActiveCount 判定），
+      // chrome.downloads / aria2 / idm 由浏览器或外部程序执行，不阻塞队列
+      activeDownloads.set(next.id, { isHls })
+      downloadWithChrome(next, settings).catch((error: any) => {
+        activeDownloads.delete(next.id)
+        updateTaskStatus(next.id, 'failed', error.message)
+      })
     }
   } finally {
     isProcessing = false
@@ -294,6 +286,15 @@ async function processQueue(): Promise<void> {
 // ===== Chrome 多层级降级下载 =====
 
 async function downloadWithChrome(task: DownloadTask, settings: any): Promise<void> {
+  // 外部下载器分发（aria2/motrix 走 JSON-RPC，idm 走协议跳转；
+  // chrome 内置下载的 HLS/多层级降级分支见下）
+  if (task.downloader === 'aria2' || task.downloader === 'motrix') {
+    return downloadWithAria2(task, settings)
+  }
+  if (task.downloader === 'idm') {
+    return downloadWithIDM(task)
+  }
+
   const video = task.video
   const isHls = video.format === 'hls'
 
