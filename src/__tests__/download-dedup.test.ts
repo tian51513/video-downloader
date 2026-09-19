@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { DetectedVideo } from '../types'
+import { createChromeMock } from './chrome-mock'
 
 /**
  * 测试：下载去重
@@ -15,29 +16,9 @@ import type { DetectedVideo } from '../types'
 // 所以我们测试的是 downloadQueue 的去重行为
 
 // mock chrome API
-let mockSendMessageCalls: any[] = []
 let mockPersistCalls: any[] = []
 
-vi.stubGlobal('chrome', {
-  runtime: {
-    sendMessage: vi.fn((msg) => {
-      mockSendMessageCalls.push(msg)
-      // Layer 4 (save-helper)：无接收方 → 快速失败，避免降级链悬挂
-      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
-        return Promise.reject(new Error('no receiver'))
-      }
-      return Promise.resolve({})
-    }),
-    onMessage: {
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    },
-  },
-  alarms: {
-    create: vi.fn(),
-    onAlarm: { addListener: vi.fn() },
-  },
-})
+vi.stubGlobal('chrome', createChromeMock().chrome)
 
 // mock storage（getAllDownloadTasks 会从 storage 重载，get 需镜像 save 的内容）
 const storageState = vi.hoisted(() => ({ tasks: [] as any[] }))
@@ -98,7 +79,6 @@ function makeVideo(overrides: Partial<DetectedVideo> = {}): DetectedVideo {
 
 describe('下载去重：同一 URL 不应创建多个任务', () => {
   beforeEach(() => {
-    mockSendMessageCalls = []
     mockPersistCalls = []
     storageState.tasks = []
     vi.clearAllMocks()

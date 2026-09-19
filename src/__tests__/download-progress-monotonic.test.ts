@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { DetectedVideo } from '../types'
+import { createChromeMock } from './chrome-mock'
 
 /**
  * 测试：下载进度应单调递增
@@ -11,23 +12,17 @@ import type { DetectedVideo } from '../types'
 
 let mockBroadcastCalls: any[] = []
 
-// Minimal chrome mock
-vi.stubGlobal('chrome', {
-  runtime: {
-    sendMessage: vi.fn((msg) => {
-      mockBroadcastCalls.push(msg)
-      // Layer 4 (save-helper)：无接收方 → 快速失败，避免测试进程挂起
-      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
-        return Promise.reject(new Error('no receiver'))
-      }
-      return Promise.resolve({})
-    }),
-    onMessage: {
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    },
+// Minimal chrome mock（捕获 DOWNLOAD_PROGRESS 广播）
+const { chrome } = createChromeMock({
+  runtimeSendMessage: (msg) => {
+    mockBroadcastCalls.push(msg)
+    if (msg?.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
+      return Promise.reject(new Error('no receiver'))
+    }
+    return Promise.resolve({})
   },
 })
+vi.stubGlobal('chrome', chrome)
 
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),

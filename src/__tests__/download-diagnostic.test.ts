@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { DetectedVideo } from '../types'
+import { createChromeMock } from './chrome-mock'
 
 /**
  * 测试：失败与取消的任务语义（真实模块行为）
@@ -10,22 +11,7 @@ import type { DetectedVideo } from '../types'
  * 3. PAGE_FETCH_ERROR / SAVE_HELPER_DONE 失败路径应使用 failDownloadTask 而非 cancelDownload
  */
 
-vi.stubGlobal('chrome', {
-  runtime: {
-    sendMessage: vi.fn((msg: any) => {
-      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
-        return Promise.reject(new Error('no receiver'))
-      }
-      return Promise.resolve({})
-    }),
-    onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
-  },
-  downloads: {
-    onDeterminingFilename: { addListener: vi.fn() },
-  },
-  tabs: { query: vi.fn(() => Promise.resolve([])) },
-  declarativeNetRequest: { updateSessionRules: vi.fn(() => Promise.resolve()) },
-})
+vi.stubGlobal('chrome', createChromeMock().chrome)
 
 // mock storage（getAllDownloadTasks 会从 storage 重载，get 需镜像 save 的内容）
 const storageState = vi.hoisted(() => ({ tasks: [] as any[] }))

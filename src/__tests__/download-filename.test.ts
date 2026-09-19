@@ -1,23 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { looksLikeFallback, cleanSiteTitleSuffix, extractNameFromUrl } from '../background/title-utils'
+import { createChromeMock } from './chrome-mock'
 
 // chrome stub（download-manager 模块顶层注册 onDeterminingFilename 监听）
-vi.stubGlobal('chrome', {
-  downloads: {
-    onDeterminingFilename: { addListener: vi.fn() },
-  },
-  runtime: {
-    sendMessage: vi.fn(() => Promise.resolve({})),
-    getURL: vi.fn((path: string) => path),
-    lastError: undefined,
-  },
-  tabs: {
-    query: vi.fn(() => Promise.resolve([])),
-  },
-  declarativeNetRequest: {
-    updateSessionRules: vi.fn(() => Promise.resolve()),
-  },
-})
+vi.stubGlobal('chrome', createChromeMock().chrome)
 
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),

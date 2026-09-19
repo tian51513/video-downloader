@@ -1,28 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { DownloadTask } from '../types'
+import { createChromeMock } from './chrome-mock'
 
-// Mock Chrome API (download-manager 在模块顶层注册 onDeterminingFilename 监听)
-const updateRuleCalls: any[] = []
-
-vi.stubGlobal('chrome', {
-  declarativeNetRequest: {
-    updateSessionRules: vi.fn((args: any) => {
-      updateRuleCalls.push(args)
-      return Promise.resolve()
-    }),
-  },
-  downloads: {
-    onDeterminingFilename: { addListener: vi.fn() },
-  },
-  runtime: {
-    sendMessage: vi.fn(() => Promise.resolve({})),
-    getURL: vi.fn((path: string) => path),
-    lastError: undefined,
-  },
-  tabs: {
-    query: vi.fn(() => Promise.resolve([])),
-  },
-})
+const { chrome, updateRuleCalls } = createChromeMock()
+vi.stubGlobal('chrome', chrome)
 
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),

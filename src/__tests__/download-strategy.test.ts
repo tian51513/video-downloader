@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { DetectedVideo } from '../types'
+import { createChromeMock } from './chrome-mock'
 
 /**
  * 测试：下载策略分发（真实模块行为）
@@ -9,49 +10,8 @@ import type { DetectedVideo } from '../types'
  * 2. HLS 视频 → 委托给 hls-downloader，不走 chrome.downloads
  */
 
-const onChangedListeners: Function[] = []
-const downloadCalls: any[] = []
-
-vi.stubGlobal('chrome', {
-  runtime: {
-    sendMessage: vi.fn((msg: any) => {
-      if (msg.type === 'SAVE_HELPER_FETCH_DOWNLOAD') {
-        return Promise.reject(new Error('no receiver'))
-      }
-      return Promise.resolve({})
-    }),
-    onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
-    getURL: vi.fn((p: string) => p),
-    lastError: undefined,
-  },
-  downloads: {
-    download: vi.fn((options: any) => {
-      downloadCalls.push(options)
-      return Promise.resolve(101)
-    }),
-    search: vi.fn(() => Promise.resolve([{ totalBytes: 100, bytesReceived: 100 }])),
-    onChanged: {
-      addListener: vi.fn((l: Function) => onChangedListeners.push(l)),
-      removeListener: vi.fn(),
-    },
-    onDeterminingFilename: { addListener: vi.fn() },
-  },
-  offscreen: {
-    hasDocument: vi.fn(() => Promise.resolve(true)),
-    createDocument: vi.fn(() => Promise.resolve()),
-  },
-  declarativeNetRequest: {
-    updateSessionRules: vi.fn(() => Promise.resolve()),
-  },
-  tabs: {
-    query: vi.fn(() => Promise.resolve([{ id: 1 }])),
-    // Layer 3：无接收方 → undefined → 快速失败
-    sendMessage: vi.fn(() => Promise.resolve(undefined)),
-  },
-  scripting: {
-    executeScript: vi.fn(() => Promise.resolve([{ result: 'test title' }])),
-  },
-})
+const { chrome, downloadCalls, onChangedListeners } = createChromeMock()
+vi.stubGlobal('chrome', chrome)
 
 vi.mock('../utils/storage', () => ({
   saveDownloads: vi.fn(() => Promise.resolve()),
