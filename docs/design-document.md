@@ -326,6 +326,17 @@ START_DOWNLOAD → download-manager.ts
      │  移除 Content-Disposition               │
      └─────────────────┬───────────────────────┘
                        │
+                       ▼
+        配置保存目录 且 权限有效 且 未开另存为?
+                       │是
+                       ▼
+        ┌─────────────────────────────────┐
+        │ Layer 0: SW fetch → 目录句柄直写 │
+        │ 写入配置目录 (与 HLS 保存同路径, │
+        │ 无弹窗/无标签页)                 │
+        └────────────────┬────────────────┘
+                         │ 失败/无权限/无句柄
+                         ▼
           ┌────────────┼────────────┬──────────────┐
           ▼            ▼            ▼              ▼
      ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐
@@ -349,12 +360,14 @@ START_DOWNLOAD → download-manager.ts
 
 | 层级 | 方式 | 适用场景 |
 |------|------|---------|
-| Layer 1 | `chrome.downloads.download()` + `declarativeNetRequest` | 标准 HTTP 下载，无 CORS 限制 |
+| Layer 0 | 目录句柄直写: SW fetch → 写入配置目录 | 配置了保存目录且权限有效（配合 Chrome 122+「每次访问时允许」持久授权，重启后也静默）；另存为开关开启时跳过 |
+| Layer 1 | `chrome.downloads.download()` + `declarativeNetRequest` (纯文件名 → 默认下载目录) | 标准 HTTP 下载，无 CORS 限制 |
 | Layer 2 | Offscreen Document fetch → save-helper | CORS 受限，但可通过 offscreen 绕过 |
 | Layer 3 | 页面 MAIN world fetch → Blob URL → chrome.downloads | 需要页面 Cookie/Referer |
 | Layer 4 | save-helper 页面直接 fetch | 最终兜底方案 |
 
 **进度监控：**
+- Layer 0：SW 流式 fetch → `updateTaskProgress`（500ms 节流）
 - Layer 1：`chrome.downloads.onChanged` 事件 + 1s 轮询
 - Layer 2/3/4：页面 fetch 进度 → `PAGE_FETCH_PROGRESS` 消息 → Service Worker → 广播
 

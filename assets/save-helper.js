@@ -289,7 +289,7 @@
   // 重新授权后直写配置目录（拒绝则降级浏览器下载，文件名仍正确）
   function showReauthButton(data, filename, mimeType, taskId, dirHandle) {
     var sizeStr = (data.byteLength / 1024 / 1024).toFixed(1)
-    statusEl.textContent = '数据已就绪 (' + sizeStr + ' MB)——目录授权已过期'
+    statusEl.textContent = '数据已就绪 (' + sizeStr + ' MB)——重启后目录权限已过期，恢复一次即可（本会话内不会再询问；弹窗若提供「每次访问时允许」，选择后永久免确认）'
 
     var container = document.querySelector('.container')
     var btn = document.createElement('button')

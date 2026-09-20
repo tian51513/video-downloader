@@ -25,6 +25,7 @@ import {
 } from './task-store'
 import { buildDownloadFileName, getExtensionFromFormat, getMimeTypeFromFormat } from './naming'
 import { setupDownloadRules } from './dnr-rules'
+import { getDirectoryHandle, DOWNLOAD_DIR } from '../../utils/directory-handle'
 
 // chromeDownloadId → intended filename 映射（onDeterminingFilename 安全网）
 const chromeDownloadFilenames = new Map<number, string>()
@@ -51,6 +52,92 @@ if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.onDete
 
 // ===== 非 HLS：多层级降级链 =====
 
+/**
+ * Layer 0: 目录句柄直写——配置了保存目录且权限有效时，
+ * SW fetch → 直接写文件到配置目录（与 HLS 保存同路径）。
+ * 全程无弹窗、无标签页、不经 chrome.downloads（不受浏览器
+ * "每次下载前询问保存位置"设置影响）。持久权限（每次访问时允许）
+ * 生效后浏览器重启也静默。
+ *
+ * 句柄缺失 / 权限未授予 / fetch 失败均返回 false 或抛错，
+ * 由调用方降级到 Layer 1（chrome.downloads）。
+ */
+async function downloadViaDirectoryHandle(task: DownloadTask, fileName: string): Promise<boolean> {
+  const dirHandle = await getDirectoryHandle(DOWNLOAD_DIR)
+  if (!dirHandle) return false
+
+  let perm: string | undefined
+  try {
+    perm = await (dirHandle as any).queryPermission({ mode: 'readwrite' })
+  } catch {
+    return false
+  }
+  if (perm !== 'granted') return false
+
+  // Referer 语义与 HLS 分片一致（referrer + unsafe-url + credentials）
+  const referrer = task.video.pageUrl || task.video.url
+  const fetchOpts: RequestInit = { credentials: 'include' }
+  if (referrer) {
+    fetchOpts.referrer = referrer
+    fetchOpts.referrerPolicy = 'unsafe-url'
+  }
+  // 用户取消（active entry 的 abortController）与 30 分钟超时（对齐 Layer 1 monitor）
+  const entry = getActiveEntry(task.id)
+  const abortController = entry?.abortController ?? new AbortController()
+  if (!entry?.abortController) {
+    setActiveEntry(task.id, { ...entry, abortController })
+  }
+  const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000)
+  fetchOpts.signal = typeof AbortSignal.any === 'function'
+    ? AbortSignal.any([abortController.signal, timeoutSignal])
+    : timeoutSignal
+
+  const response = await fetch(task.video.url, fetchOpts)
+  if (!response.ok || !response.body) return false
+
+  const total = parseInt(response.headers.get('content-length') || '', 10) || 0
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+  const startedAt = Date.now()
+  let lastReport = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    loaded += value.byteLength
+    const now = Date.now()
+    if (now - lastReport >= 500 || (total > 0 && loaded >= total)) {
+      lastReport = now
+      updateTaskProgress(
+        task.id,
+        total > 0 ? Math.min((loaded / total) * 100, 99) : task.progress ?? 0,
+        loaded / Math.max((now - startedAt) / 1000, 0.5),
+        loaded,
+        total > 0 ? total : undefined
+      )
+    }
+  }
+
+  const fileHandle = await dirHandle.getFileHandle(fileName, { create: true })
+  let writable: FileSystemWritableFileStream | undefined
+  try {
+    writable = await fileHandle.createWritable()
+    for (const chunk of chunks) {
+      await writable.write(chunk)
+    }
+    await writable.close()
+  } catch (writeErr) {
+    try { await writable?.abort() } catch { /* 已关闭 */ }
+    throw writeErr
+  }
+
+  updateTaskStatus(task.id, 'completed')
+  deleteActiveEntry(task.id)
+  console.log(`[DownloadManager] Layer 0 目录直写完成: ${dirHandle.name}/${fileName}`)
+  return true
+}
+
 export async function startDirectDownload(task: DownloadTask, settings: any): Promise<void> {
   // 设置 Referer 和移除 Content-Disposition
   await setupDownloadRules(task)
@@ -60,13 +147,31 @@ export async function startDirectDownload(task: DownloadTask, settings: any): Pr
   const ext = getExtensionFromFormat(video.format)
   const fileName = buildDownloadFileName(video.title, ext)
 
+  // Layer 0: 目录句柄直写（另存为模式下让浏览器对话框接管，不抢路径）
+  if (!settings.downloadSettings?.askSaveLocation) {
+    try {
+      if (await downloadViaDirectoryHandle(task, fileName)) {
+        requestQueueDrain()
+        return
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        // 用户暂停/取消已设置对应状态，保持不动
+        requestQueueDrain()
+        return
+      }
+      console.warn('[DownloadManager] Layer 0 目录直写失败，降级 Layer 1:', error.message)
+    }
+  }
+
   // Layer 1: 直接 chrome.downloads.download
+  // （filename 只用纯文件名——chrome.downloads 的路径是相对浏览器默认下载
+  // 目录的，拼 baseSaveDirectory（目录叶名）会落到「默认目录/叶名/」而非
+  // 用户所选目录；配置目录的写入由 Layer 0 负责）
   try {
     const downloadId = await chrome.downloads.download({
       url: video.url,
-      filename: settings.baseSaveDirectory
-        ? `${settings.baseSaveDirectory}/${fileName}`
-        : fileName,
+      filename: fileName,
       saveAs: settings.downloadSettings?.askSaveLocation || false,
       conflictAction: 'uniquify',
     })

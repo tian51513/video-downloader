@@ -61,7 +61,7 @@ src/
 │   ├── download-manager.ts  # 下载 facade：任务创建(去重+标题刷新)、队列调度、下载方式分发
 │   ├── downloads/           # 下载模块族（自 download-manager 拆分）
 │   │   ├── task-store.ts        # 任务状态机（队列+活动句柄+持久化+清理变体，叶子模块）
-│   │   ├── chrome-downloader.ts # L1-L4 降级链 + chrome.downloads 监控 + 文件名安全网 + HLS 包装
+│   │   ├── chrome-downloader.ts # L0 目录直写 + L1-L4 降级链 + chrome.downloads 监控 + 文件名安全网 + HLS 包装
 │   │   ├── external-downloaders.ts # aria2/Motrix RPC + IDM 协议
 │   │   ├── naming.ts            # 文件名构建 + 命名模板缓存
 │   │   └── dnr-rules.ts         # Referer 伪造 / Content-Disposition 移除规则
@@ -148,7 +148,8 @@ assets/
     ├── chrome:
     │   ├── HLS: → hls-downloader.ts (非阻塞)
     │   └── 非 HLS: 多层级降级:
-    │       ├── Layer 1: 直接 chrome.downloads.download() (declarativeNetRequest + onDeterminingFilename)
+    │       ├── Layer 0: 目录句柄直写 (配置目录+权限有效时 SW fetch→直写文件, 无弹窗无标签页, 与 HLS 保存同路径; askSaveLocation 开启时跳过)
+    │       ├── Layer 1: 直接 chrome.downloads.download() (declarativeNetRequest + onDeterminingFilename, 纯文件名→默认下载目录)
     │       ├── Layer 2: offscreen fetch → save-helper (降级)
     │       ├── Layer 3: 页面 MAIN world fetch → blob URL → chrome.downloads (降级)
     │       └── Layer 4: save-helper 直接 fetch (最终降级)
@@ -264,7 +265,8 @@ host_permissions: `<all_urls>`
 - `injector-script.ts` 中报告视频使用 `window.postMessage` (不能直接使用 `chrome.runtime`)
 - IndexedDB 的 `onupgradeneeded` 仅在版本变化时触发；打开已有数据库需检查 store 是否存在——TS 侧统一走 `src/utils/idb.ts`（含此陷阱与升版本补建逻辑），不要再手写 open/upgrade 样板
 - `new Promise` executor 回调内的异步回调（如 `onsuccess`）中抛出的异常不会被 Promise 捕获，需 try/catch（`utils/idb.ts` 已统一处理）
-- 目录句柄 (File System Access API) 在浏览器/扩展重启后权限会回退；SW 无 user activation 不能 requestPermission——下载前 `queryPermission` 预检，未授权时由 save-helper 页面引导一键重新授权（自动打开的页面同样无手势，不能静默请求）
+- 目录句柄 (File System Access API) 的权限生命周期 = 本浏览器会话（重启清零，句柄仍在 IndexedDB）；SW 无 user activation 不能 requestPermission——下载前 `queryPermission` 预检，未授权时由 save-helper 页面引导一键重新授权（自动打开的页面同样无手势，不能静默请求）。重启后一次确认是 Chrome 安全模型的下限。**已试错并回退**：曾尝试在 popup 下载点击手势内对句柄 requestPermission 静默续权（指望 Chromium `is_extension` 无 request manager 自动授权路径），实测 stable Chrome 反而退化为每次保存都要确认（popup 上下文的授权请求不可靠，且不产生会话级粘性授权）——勿再走此路；可行方向是 save-helper 引导用户在权限弹窗选「每次访问时允许」（Chrome 122+ 持久权限）或 blob→chrome.downloads 兜底
+- 设置页「清除」保存目录只清 `baseSaveDirectory` 设置串、不清 IndexedDB 句柄（`removeDirectoryHandle` 无调用方）——UI 显示"未设置"但 Layer 0/HLS/save-helper 仍写旧目录（已知问题，未修）。Layer 1 的 filename 只用纯文件名：chrome.downloads 的路径相对浏览器默认下载目录，此前拼 `baseSaveDirectory`（目录叶名）会错落到「默认目录/叶名/」，配置目录的写入由 Layer 0 负责
 - `startChromeNativeDownload` 必须提取为独立函数，避免 ESBuild minifier 去掉分号导致 ASI (Automatic Semicolon Insertion) 问题
 - Tab 导航 (`tabs.onUpdated` loading + complete) 时自动重新注入 MAIN world 脚本
 - 音频格式 (mp3/m4a/aac/flac/ogg/wav/wma/opus) 同样被检测和支持下载
